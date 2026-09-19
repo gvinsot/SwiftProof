@@ -30,3 +30,28 @@ jobs:
         env:
           SWIFTPROOF_TEST_DOCKER_IMAGE: golang:1.26-bookworm
         run: go test ./internal/harness ./internal/cli -run Docker -count=1 -v
+
+  build:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Build Windows and Linux archives
+        shell: bash
+        run: go run ./tools/build -version "dev-${GITHUB_SHA:0:12}" -out dist
+      - name: Upload Windows and Linux archives
+        uses: actions/upload-artifact@v4
+        with:
+          name: swiftproof-build
+          path: |
+            dist/*.tar.gz
+            dist/*.zip
+            dist/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 30

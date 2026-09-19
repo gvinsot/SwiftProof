@@ -14,6 +14,20 @@ import (
 	"github.com/gvinsot/SwiftProof/internal/model"
 )
 
+func TestValidateOutputRejectsUserSymlink(t *testing.T) {
+	root := t.TempDir()
+	if err := validateOutput(filepath.Join(root, "new", "report")); err != nil {
+		t.Fatalf("normal temporary output: %v", err)
+	}
+	link := filepath.Join(root, "link")
+	if err := os.Symlink(root, link); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	if err := validateOutput(filepath.Join(link, "report")); err == nil {
+		t.Fatal("user symlink accepted for output")
+	}
+}
+
 func git(t *testing.T, dir string, args ...string) string {
 	t.Helper()
 	cmd := exec.Command("git", append([]string{"-c", "user.name=SwiftProof Test", "-c", "user.email=test@example.invalid", "-c", "commit.gpgsign=false"}, args...)...)

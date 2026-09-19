@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/gvinsot/SwiftProof/internal/fsutil"
 	"github.com/gvinsot/SwiftProof/internal/model"
 )
 
@@ -393,7 +394,7 @@ func (r *Repository) Snapshot(ctx context.Context, commit, dest string) error {
 	}
 	for p := abs; ; p = filepath.Dir(p) {
 		info, e := os.Lstat(p)
-		if e == nil && info.Mode()&os.ModeSymlink != 0 {
+		if e == nil && info.Mode()&os.ModeSymlink != 0 && !fsutil.IsSystemAlias(p) {
 			return fmt.Errorf("snapshot destination has symlink ancestor %q", p)
 		}
 		if e != nil && !os.IsNotExist(e) {

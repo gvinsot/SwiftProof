@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/gvinsot/SwiftProof/internal/config"
+	"github.com/gvinsot/SwiftProof/internal/fsutil"
 	"github.com/gvinsot/SwiftProof/internal/gitrepo"
 	"github.com/gvinsot/SwiftProof/internal/harness"
 	"github.com/gvinsot/SwiftProof/internal/linter"
@@ -391,7 +392,7 @@ func validateOutput(dir string) error {
 		if err != nil && !errors.Is(err, os.ErrNotExist) {
 			return err
 		}
-		if err == nil && (info.Mode()&os.ModeSymlink != 0 || !info.IsDir()) {
+		if err == nil && (info.Mode()&os.ModeSymlink != 0 || !info.IsDir()) && !fsutil.IsSystemAlias(p) {
 			return fmt.Errorf("output path must contain only directories, not links: %s", p)
 		}
 		if filepath.Dir(p) == p {

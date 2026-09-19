@@ -5,13 +5,53 @@ on:
     tags:
       - 'v*'
   workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to embed (for example v0.1.0); blank for a dev build'
+        type: string
+        default: ''
+      publish:
+        description: 'Publish a GitHub Release after verification'
+        type: boolean
+        default: false
 
 permissions:
   contents: read
 
 jobs:
-  verify:
+  prepare:
     runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      publish: ${{ steps.version.outputs.publish }}
+    steps:
+      - id: version
+        env:
+          REQUESTED_VERSION: ${{ inputs.version }}
+          REQUESTED_PUBLISH: ${{ inputs.publish }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${REQUESTED_VERSION:-dev-${GITHUB_SHA:0:12}}"
+          publish="${REQUESTED_PUBLISH:-false}"
+          if [[ "$GITHUB_REF_TYPE" == tag ]]; then
+            version="$GITHUB_REF_NAME"
+            publish=true
+          fi
+          [[ "$version" =~ ^[0-9A-Za-z][0-9A-Za-z._+-]{0,127}$ ]] || exit 1
+          if [[ "$publish" == true ]]; then
+            [[ "$version" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]] || exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "publish=$publish" >> "$GITHUB_OUTPUT"
+
+  verify:
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -22,9 +62,17 @@ jobs:
           cache: false
       - run: go test ./...
       - run: go vet ./...
+      - if: runner.os == 'Linux'
+        run: go test -race ./...
+      - if: runner.os == 'Linux'
+        run: docker pull golang:1.26-bookworm
+      - if: runner.os == 'Linux'
+        env:
+          SWIFTPROOF_TEST_DOCKER_IMAGE: golang:1.26-bookworm
+        run: go test ./internal/harness ./internal/cli -run Docker -count=1 -v
 
   build:
-    needs: verify
+    needs: [prepare, verify]
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -32,9 +80,9 @@ jobs:
         goos: [linux, darwin, windows]
         goarch: [amd64, arm64]
     env:
-      CGO_ENABLED: '0'
-      GOOS: ${{ matrix.goos }}
-      GOARCH: ${{ matrix.goarch }}
+      TARGET_GOOS: ${{ matrix.goos }}
+      TARGET_GOARCH: ${{ matrix.goarch }}
+      VERSION: ${{ needs.prepare.outputs.version }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -47,33 +95,51 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          version="dev-${GITHUB_SHA:0:12}"
-          if [[ "$GITHUB_REF_TYPE" == tag ]]; then
-            version="$GITHUB_REF_NAME"
-            if [[ ! "$version" =~ ^v[0-9A-Za-z][0-9A-Za-z._+-]*$ ]]; then
-              echo 'Tag must be a portable version name, for example v0.1.0.' >&2
-              exit 1
-            fi
-          fi
-          name="swiftproof-${version}-${GOOS}-${GOARCH}"
-          binary=swiftproof
-          if [[ "$GOOS" == windows ]]; then binary=swiftproof.exe; fi
-          mkdir -p "stage/$name" dist
-          go build -trimpath -buildvcs=false \
-            -ldflags="-s -w -X main.version=${version}" \
-            -o "stage/$name/$binary" ./cmd/swiftproof
-          cp LICENSE README.md "stage/$name/"
-          if [[ "$GOOS" == windows ]]; then
-            (cd stage && zip -qr "../dist/$name.zip" "$name")
-          else
-            tar -czf "dist/$name.tar.gz" -C stage "$name"
-          fi
+          go run ./tools/build -version "$VERSION" -out dist \
+            -targets "$TARGET_GOOS/$TARGET_GOARCH"
       - uses: actions/upload-artifact@v4
         with:
           name: swiftproof-${{ matrix.goos }}-${{ matrix.goarch }}
-          path: dist/*
+          path: |
+            dist/*.tar.gz
+            dist/*.zip
           if-no-files-found: error
           retention-days: 30
+
+  publish:
+    needs: [prepare, checksums]
+    if: needs.prepare.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency:
+      group: release-${{ needs.prepare.outputs.version }}
+      cancel-in-progress: false
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      VERSION: ${{ needs.prepare.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: swiftproof-release
+          path: dist
+      - name: Verify archives and publish release
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd dist && sha256sum --check SHA256SUMS)
+          notes="docs/releases/$VERSION.md"
+          options=(--generate-notes)
+          if [[ -f "$notes" ]]; then options=(--notes-file "$notes"); fi
+          if [[ "$VERSION" == *-* ]]; then options+=(--prerelease); fi
+          if [[ "$GITHUB_REF_TYPE" == tag ]]; then options+=(--verify-tag); fi
+          gh release create "$VERSION" dist/*.zip dist/*.tar.gz dist/SHA256SUMS \
+            --target "$GITHUB_SHA" --title "SwiftProof $VERSION" --draft "${options[@]}"
+          gh release edit "$VERSION" --draft=false
 
   checksums:
     needs: build

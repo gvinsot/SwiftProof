@@ -8,14 +8,22 @@ It works without an AI provider. It does not assign confidence percentages or au
 
 ## Quick start
 
-Requirements: Go 1.23+ and Git. Docker with Linux containers is required only to execute repository code.
+Download a binary for Windows, Linux or macOS from [GitHub Releases](https://github.com/gvinsot/SwiftProof/releases). Git is required at runtime. Docker with Linux containers is required only to execute repository code.
 
-Build from this source checkout (no release is published by this change):
+To build from source, install Go 1.23+ and run:
 
 ```sh
 go build -o swiftproof ./cmd/swiftproof
 go test ./...
 ```
+
+To build Windows amd64 **and Linux amd64/arm64** together, run from the repository root on any supported host:
+
+```sh
+go run ./tools/build
+```
+
+Binaries are written to `dist/windows-amd64/swiftproof.exe`, `dist/linux-amd64/swiftproof` and `dist/linux-arm64/swiftproof`. The same command produces portable ZIP/tar.gz archives and `dist/SHA256SUMS`. Every successful CI run retains these archives as the `swiftproof-build` artifact.
 
 Put the binary on your PATH, then run `swiftproof lint --base main` in a Git repository. Windows builds produce `swiftproof.exe` when using `go build ./cmd/swiftproof`. The [release workflow](docs/RELEASE.md) prepares portable archives for distribution.
 
