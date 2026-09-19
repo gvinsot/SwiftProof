@@ -1,0 +1,32 @@
+name: CI
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+      - run: go test ./...
+      - run: go vet ./...
+      - run: go build ./cmd/swiftproof
+      - if: runner.os == 'Linux'
+        run: go test -race ./...
+      - if: runner.os == 'Linux'
+        run: docker pull golang:1.26-bookworm
+      - if: runner.os == 'Linux'
+        env:
+          SWIFTPROOF_TEST_DOCKER_IMAGE: golang:1.26-bookworm
+        run: go test ./internal/harness ./internal/cli -run Docker -count=1 -v

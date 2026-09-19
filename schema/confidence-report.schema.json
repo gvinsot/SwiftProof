@@ -1,0 +1,221 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/gvinsot/SwiftProof/schema/confidence-report.schema.json",
+  "title": "SwiftProof confidence report v1",
+  "description": "Recorded observations and review priorities, not a probability of correctness. Schema validation checks structure; it does not verify test execution, referential integrity, or the truth of a model's claims.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "tool_version", "generated_at", "change", "linter", "checks", "hypotheses", "evidence", "reproduced_issues", "unverified", "review_targets", "review_surface", "artifacts", "audit", "exit_code"],
+  "properties": {
+    "version": {"const": 1},
+    "tool_version": {"type": "string"},
+    "generated_at": {"type": "string", "format": "date-time"},
+    "intent": {"type": "string"},
+    "change": {"$ref": "#/$defs/change"},
+    "linter": {"type": "array", "items": {"$ref": "#/$defs/signal"}},
+    "checks": {"type": "array", "items": {"$ref": "#/$defs/check"}},
+    "hypotheses": {"type": "array", "items": {"$ref": "#/$defs/hypothesis"}},
+    "evidence": {"type": "array", "items": {"$ref": "#/$defs/evidence"}},
+    "reproduced_issues": {
+      "type": "array",
+      "items": {"allOf": [{"$ref": "#/$defs/hypothesis"}, {"properties": {"status": {"const": "REPRODUCED"}}}]}
+    },
+    "unverified": {"type": "array", "items": {"type": "string"}},
+    "review_targets": {"type": "array", "items": {"$ref": "#/$defs/reviewTarget"}},
+    "review_surface": {"$ref": "#/$defs/reviewSurface"},
+    "artifacts": {"type": "array", "items": {"$ref": "#/$defs/artifact"}},
+    "audit": {"type": "array", "items": {"$ref": "#/$defs/auditEvent"}},
+    "exit_code": {
+      "type": "integer",
+      "enum": [0, 1, 2, 3, 4],
+      "description": "0: completed without a reproduced blocker; 1: reproduced high/critical issue; 2: human review required in CI; 3: configuration failure; 4: operational failure. Code 0 does not establish correctness."
+    }
+  },
+  "$defs": {
+    "id": {"type": "string", "minLength": 1},
+    "path": {"type": "string", "minLength": 1, "description": "Repository-relative Git path, unless the containing artifact explicitly records an output filesystem path."},
+    "severity": {"type": "string", "enum": ["low", "medium", "high", "critical"]},
+    "side": {"type": "string", "enum": ["old", "new"]},
+    "count": {"type": "integer", "minimum": 0},
+    "line": {"type": "integer", "minimum": 1},
+    "location": {"type": "integer", "minimum": 0, "description": "One-based line number; 0 denotes a file-level location."},
+    "change": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["base_ref", "head_ref", "base_commit", "head_commit", "files", "additions", "deletions"],
+      "properties": {
+        "base_ref": {"type": "string"},
+        "head_ref": {"type": "string"},
+        "base_commit": {"type": "string", "description": "Resolved immutable base commit; empty only for an unpopulated report."},
+        "head_commit": {"type": "string", "description": "Resolved immutable candidate commit; empty only for an unpopulated report."},
+        "files": {"type": "array", "items": {"$ref": "#/$defs/changedFile"}},
+        "additions": {"$ref": "#/$defs/count"},
+        "deletions": {"$ref": "#/$defs/count"}
+      }
+    },
+    "changedFile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "status", "binary", "additions", "deletions", "hunks"],
+      "properties": {
+        "path": {"$ref": "#/$defs/path"},
+        "old_path": {"$ref": "#/$defs/path"},
+        "status": {"type": "string", "enum": ["A", "C", "D", "M", "R", "T", "U", "X", "B"]},
+        "binary": {"type": "boolean"},
+        "additions": {"$ref": "#/$defs/count"},
+        "deletions": {"$ref": "#/$defs/count"},
+        "hunks": {"type": "array", "items": {"$ref": "#/$defs/hunk"}}
+      }
+    },
+    "hunk": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["old_start", "old_lines", "new_start", "new_lines", "lines"],
+      "properties": {
+        "old_start": {"$ref": "#/$defs/location"},
+        "old_lines": {"$ref": "#/$defs/count"},
+        "new_start": {"$ref": "#/$defs/location"},
+        "new_lines": {"$ref": "#/$defs/count"},
+        "lines": {"type": "array", "items": {"$ref": "#/$defs/diffLine"}}
+      }
+    },
+    "diffLine": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "content"],
+      "properties": {
+        "kind": {"type": "string", "enum": ["add", "delete", "context"]},
+        "old_line": {"$ref": "#/$defs/line"},
+        "new_line": {"$ref": "#/$defs/line"},
+        "content": {"type": "string", "description": "Line content may be redacted; line coordinates are retained."}
+      },
+      "allOf": [
+        {"if": {"properties": {"kind": {"const": "add"}}}, "then": {"required": ["new_line"]}},
+        {"if": {"properties": {"kind": {"const": "delete"}}}, "then": {"required": ["old_line"]}},
+        {"if": {"properties": {"kind": {"const": "context"}}}, "then": {"required": ["old_line", "new_line"]}}
+      ]
+    },
+    "signal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "kind", "path", "line", "severity", "summary", "evidence"],
+      "properties": {
+        "id": {"$ref": "#/$defs/id"},
+        "kind": {"type": "string", "minLength": 1},
+        "path": {"$ref": "#/$defs/path"},
+        "line": {"$ref": "#/$defs/location"},
+        "end_line": {"$ref": "#/$defs/line"},
+        "side": {"$ref": "#/$defs/side"},
+        "symbol": {"type": "string"},
+        "severity": {"$ref": "#/$defs/severity"},
+        "summary": {"type": "string"},
+        "evidence": {"type": "string", "description": "Deterministic observation or heuristic explanation; a signal is not a reproduced defect."}
+      }
+    },
+    "check": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "kind", "status", "exit_code", "duration_ms", "output", "truncated"],
+      "properties": {
+        "id": {"$ref": "#/$defs/id"},
+        "kind": {"type": "string", "minLength": 1},
+        "status": {"type": "string", "enum": ["PASS", "FAIL", "SKIPPED", "TIMEOUT", "ERROR"]},
+        "command": {"type": "array", "items": {"type": "string"}, "description": "Configured argument vector; never a free-form shell command."},
+        "exit_code": {"type": "integer", "minimum": -1, "description": "-1 means no process exit status was available."},
+        "duration_ms": {"$ref": "#/$defs/count"},
+        "output": {"type": "string"},
+        "truncated": {"type": "boolean"}
+      },
+      "allOf": [
+        {"if": {"properties": {"status": {"const": "PASS"}}}, "then": {"properties": {"exit_code": {"const": 0}}}},
+        {"if": {"properties": {"status": {"const": "FAIL"}}}, "then": {"properties": {"exit_code": {"minimum": 1, "maximum": 124}}}}
+      ]
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "kind", "description", "status", "test_names"],
+      "properties": {
+        "id": {"$ref": "#/$defs/id"},
+        "kind": {"type": "string", "enum": ["source_observation", "differential_test"]},
+        "description": {"type": "string"},
+        "path": {"$ref": "#/$defs/path"},
+        "output": {"type": "string"},
+        "check_id": {"$ref": "#/$defs/id"},
+        "base_check_id": {"$ref": "#/$defs/id"},
+        "runner": {"type": "string", "enum": ["go_test_json"], "description": "Verifier used to confirm that the generated named tests actually ran."},
+        "test_names": {"type": "array", "items": {"type": "string", "minLength": 1}, "description": "Names extracted from generated test source; empty for observations and unsupported runners."},
+        "status": {"type": "string", "enum": ["OBSERVED", "REPRODUCED", "NOT_REPRODUCED", "UNVERIFIED"]}
+      },
+      "allOf": [
+        {"if": {"properties": {"kind": {"const": "source_observation"}}}, "then": {"required": ["path"], "properties": {"status": {"const": "OBSERVED"}}}},
+        {"if": {"properties": {"kind": {"const": "differential_test"}}}, "then": {"required": ["check_id", "base_check_id"], "properties": {"status": {"enum": ["REPRODUCED", "NOT_REPRODUCED", "UNVERIFIED"]}}}},
+        {"if": {"properties": {"status": {"enum": ["REPRODUCED", "NOT_REPRODUCED"]}}}, "then": {"required": ["runner"], "properties": {"test_names": {"minItems": 1}}}}
+      ]
+    },
+    "hypothesis": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "title", "severity", "status", "rationale", "evidence_ids"],
+      "properties": {
+        "id": {"$ref": "#/$defs/id"},
+        "title": {"type": "string", "minLength": 1},
+        "severity": {"$ref": "#/$defs/severity"},
+        "status": {"type": "string", "enum": ["REPRODUCED", "NOT_REPRODUCED", "UNVERIFIED", "DISMISSED"]},
+        "rationale": {"type": "string"},
+        "evidence_ids": {"type": "array", "items": {"$ref": "#/$defs/id"}},
+        "path": {"$ref": "#/$defs/path"},
+        "line": {"$ref": "#/$defs/line"}
+      },
+      "allOf": [
+        {"if": {"properties": {"status": {"enum": ["REPRODUCED", "NOT_REPRODUCED", "DISMISSED"]}}}, "then": {"properties": {"evidence_ids": {"minItems": 1}}}}
+      ]
+    },
+    "reviewTarget": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "start_line", "end_line", "side", "severity", "reasons", "signal_ids"],
+      "properties": {
+        "path": {"$ref": "#/$defs/path"},
+        "start_line": {"$ref": "#/$defs/location"},
+        "end_line": {"$ref": "#/$defs/location"},
+        "side": {"$ref": "#/$defs/side"},
+        "severity": {"$ref": "#/$defs/severity"},
+        "reasons": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+        "signal_ids": {"type": "array", "items": {"$ref": "#/$defs/id"}, "uniqueItems": true}
+      }
+    },
+    "reviewSurface": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["changed_lines", "focused_lines", "note"],
+      "properties": {
+        "changed_lines": {"$ref": "#/$defs/count", "description": "Distinct changed path/side/line coordinates; deletions and additions count separately."},
+        "focused_lines": {"$ref": "#/$defs/count", "description": "Distinct changed coordinates covered by prioritized targets; never a coverage or confidence percentage."},
+        "note": {"type": "string"}
+      }
+    },
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "kind"],
+      "properties": {
+        "path": {"type": "string", "minLength": 1, "description": "Local artifact path; consumers should not execute artifacts automatically."},
+        "kind": {"type": "string", "minLength": 1},
+        "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    },
+    "auditEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["time", "tool", "arguments", "status", "duration_ms"],
+      "properties": {
+        "time": {"type": "string", "format": "date-time"},
+        "tool": {"type": "string", "minLength": 1},
+        "arguments": {"type": "string", "description": "Bounded, redacted arguments or operation metadata."},
+        "status": {"type": "string", "enum": ["OK", "ERROR", "PASS", "FAIL", "SKIPPED", "TIMEOUT"]},
+        "duration_ms": {"$ref": "#/$defs/count"}
+      }
+    }
+  }
+}

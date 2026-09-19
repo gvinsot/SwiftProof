@@ -1,0 +1,1 @@
+ok  	example.test/swiftproof-demo	0.002s

@@ -1,4 +1,9 @@
 # Logs
+.swiftproof/
+/swiftproof
+/swiftproof.exe
+coverage.out
+
 logs
 *.log
 npm-debug.log*

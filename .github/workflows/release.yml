@@ -1,0 +1,99 @@
+name: Build release artifacts
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+      - run: go test ./...
+      - run: go vet ./...
+
+  build:
+    needs: verify
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        goos: [linux, darwin, windows]
+        goarch: [amd64, arm64]
+    env:
+      CGO_ENABLED: '0'
+      GOOS: ${{ matrix.goos }}
+      GOARCH: ${{ matrix.goarch }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Build and package
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="dev-${GITHUB_SHA:0:12}"
+          if [[ "$GITHUB_REF_TYPE" == tag ]]; then
+            version="$GITHUB_REF_NAME"
+            if [[ ! "$version" =~ ^v[0-9A-Za-z][0-9A-Za-z._+-]*$ ]]; then
+              echo 'Tag must be a portable version name, for example v0.1.0.' >&2
+              exit 1
+            fi
+          fi
+          name="swiftproof-${version}-${GOOS}-${GOARCH}"
+          binary=swiftproof
+          if [[ "$GOOS" == windows ]]; then binary=swiftproof.exe; fi
+          mkdir -p "stage/$name" dist
+          go build -trimpath -buildvcs=false \
+            -ldflags="-s -w -X main.version=${version}" \
+            -o "stage/$name/$binary" ./cmd/swiftproof
+          cp LICENSE README.md "stage/$name/"
+          if [[ "$GOOS" == windows ]]; then
+            (cd stage && zip -qr "../dist/$name.zip" "$name")
+          else
+            tar -czf "dist/$name.tar.gz" -C stage "$name"
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: swiftproof-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 30
+
+  checksums:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: swiftproof-*
+          path: dist
+          merge-multiple: true
+      - name: Compute archive checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd dist
+          sha256sum swiftproof-*.tar.gz swiftproof-*.zip > SHA256SUMS
+          sha256sum --check SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: swiftproof-release
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 30

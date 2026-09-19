@@ -1,0 +1,51 @@
+{
+  "version": 1,
+  "language": "go",
+  "commands": {
+    "build": [
+      "go",
+      "build",
+      "./..."
+    ],
+    "generated_test": [
+      "go",
+      "test",
+      "{package}"
+    ],
+    "test": [
+      "go",
+      "test",
+      "./..."
+    ],
+    "typecheck": [
+      "go",
+      "vet",
+      "./..."
+    ]
+  },
+  "sandbox": {
+    "image": "golang:1.26-bookworm",
+    "network": false,
+    "timeout_seconds": 120,
+    "max_runtime_seconds": 600,
+    "max_output_bytes": 65536,
+    "memory_mb": 1024,
+    "cpus": 2
+  },
+  "reviewer": {
+    "endpoint": "https://api.openai.com/v1/chat/completions",
+    "model": "",
+    "api_key_env": "SWIFTPROOF_API_KEY",
+    "max_iterations": 20,
+    "max_generated_tests": 10,
+    "timeout_seconds": 600,
+    "max_input_bytes": 131072
+  },
+  "sensitive_paths": [
+    "**/auth/**",
+    "**/payment*/**",
+    "**/migrations/**",
+    ".github/workflows/**",
+    ".swiftproof.json"
+  ]
+}
