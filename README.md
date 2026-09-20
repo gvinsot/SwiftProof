@@ -182,7 +182,7 @@ In a Docker Swarm deployment the key is a [Docker secret](https://docs.docker.co
 ```yaml
 services:
   swiftproof:
-    image: registry.example/swiftproof:v0.2.0
+    image: registry.example/swiftproof:v0.3.0
     environment:
       - SWIFTPROOF_REVIEWER_ENDPOINT=https://provider.internal/v1
       - SWIFTPROOF_REVIEWER_MODEL=your-tool-capable-model
