@@ -177,3 +177,55 @@ func readReviewerReport(t *testing.T, dir string) model.Report {
 	}
 	return result
 }
+
+// A deployment points the pinned binary and its trusted policy at its own
+// provider: endpoint and model come from the environment, the credential from
+// the mounted Docker secret, and a policy that configures no model at all is
+// still activated by the deployed model.
+func TestReviewerTakesProviderFromDeployment(t *testing.T) {
+	dir := fixture(t)
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request struct {
+			Model string `json:"model"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil || request.Model != "deployed-model" {
+			t.Errorf("request model is %q, error %v; want the deployed model", request.Model, err)
+		}
+		if r.URL.Path != "/v1/chat/completions" || r.Header.Get("Authorization") != "Bearer secret-key" {
+			t.Error("endpoint or credential was not taken from the deployment")
+		}
+		calls.Add(1)
+		w.Write([]byte(`{"choices":[{"finish_reason":"stop","message":{"role":"assistant","content":"Done"}}]}`))
+	}))
+	defer server.Close()
+	cfg := config.Default("go")
+	cfg.Reviewer.Endpoint, cfg.Reviewer.Model = "https://unreachable.invalid/v1", ""
+	cfg.Reviewer.APIKeyEnv = "SWIFTPROOF_TEST_REVIEWER_KEY"
+	policy := filepath.Join(t.TempDir(), "policy.json")
+	writeReviewerPolicy(t, policy, cfg)
+	// The deployment converts the variable into a secret and removes it from
+	// the container environment, leaving only the mounted file behind.
+	secret := filepath.Join(t.TempDir(), "SWIFTPROOF_TEST_REVIEWER_KEY")
+	if err := os.WriteFile(secret, []byte("secret-key\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(cfg.Reviewer.APIKeyEnv, "")
+	t.Setenv(cfg.Reviewer.APIKeyEnv+config.FileEnvSuffix, secret)
+	t.Setenv(config.EndpointEnv, server.URL+"/v1")
+	t.Setenv(config.ModelEnv, "deployed-model")
+	args := []string{"review", "--repo", dir, "--config", policy, "--checks=false", "--ci", "--out", "report"}
+	var out, errOut bytes.Buffer
+	if code := Run(context.Background(), args, &out, &errOut, "test"); code != 2 || calls.Load() != 1 {
+		t.Fatalf("exit %d with %d provider calls, want 2 and 1: %s", code, calls.Load(), errOut.String())
+	}
+	if !strings.Contains(errOut.String(), "model from "+config.ModelEnv) || strings.Contains(errOut.String(), "secret-key") {
+		t.Fatalf("the run log must name the deployed sources without the credential: %s", errOut.String())
+	}
+	// A named secret that cannot be read stops the run instead of quietly
+	// downgrading it to an unauthenticated request.
+	t.Setenv(cfg.Reviewer.APIKeyEnv+config.FileEnvSuffix, secret+".absent")
+	if code := Run(context.Background(), args, &out, &errOut, "test"); code != 3 || calls.Load() != 1 {
+		t.Fatalf("missing secret: exit %d with %d provider calls, want 3 and 1", code, calls.Load())
+	}
+}

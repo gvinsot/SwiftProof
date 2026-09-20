@@ -15,6 +15,15 @@ backend. SwiftProof receives a job token and its usual bounded investigation
 tools, without the deployment agent's MCP tools. Model output still requires
 SwiftProof evidence validation.
 
+The bridge needs no policy change to redirect a review: `SWIFTPROOF_REVIEWER_ENDPOINT`
+and `SWIFTPROOF_REVIEWER_MODEL` override the baseline policy's provider for the
+run, and the job token is read from `SWIFTPROOF_API_KEY`, from the file named by
+`SWIFTPROOF_API_KEY_FILE`, or from the Docker secret the cluster mounts at
+`/run/secrets/SWIFTPROOF_API_KEY` — the `_KEY` suffix makes that conversion
+automatic, so the value never appears in the compose file or in
+`docker service inspect`. Only these three settings come from the environment;
+image, commands and budgets stay with the deployed commit's policy.
+
 Deployment reviews compare the **exact deployed commit** against the candidate
 using `--exact --ci`, with policy from the deployed commit. Reports are tied to
 both SHAs, built image digests, the trusted binary, baseline policy and model

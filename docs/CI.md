@@ -60,6 +60,14 @@ Fork PRs force the investigator off. The repository pilot starts without a
 provider. The PulsarCD provider bridge is a separate deployment integration;
 GitHub-hosted runners do not automatically acquire its internal credentials.
 
+A runner or container may instead supply the provider through the environment:
+`SWIFTPROOF_REVIEWER_ENDPOINT` and `SWIFTPROOF_REVIEWER_MODEL` override the
+policy values, and the key is taken from `SWIFTPROOF_API_KEY`, then
+`SWIFTPROOF_API_KEY_FILE`, then the Docker secret mounted at
+`/run/secrets/SWIFTPROOF_API_KEY`. A deployed model activates `review` exactly
+as a policy model does, so keep these variables out of any job that runs
+untrusted fork code. See [provider settings from the deployment](../README.md#provider-settings-from-the-deployment).
+
 `enforce: true` fails on code 1 or operational/configuration failure. Code 2
 produces a warning and still requires normal human PR approval: the check's
 green status is not that approval. Configure required reviews, dismissal of

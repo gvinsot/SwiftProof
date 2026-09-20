@@ -39,6 +39,8 @@ Analysis compares the merge base by default; BASE..HEAD compares exact commits.
 Only committed files are reviewed. Output defaults to .swiftproof/.
 Review runs configured checks in Docker. Lint never executes repository code.
 Review automatically uses the LLM when reviewer.model is configured in trusted policy.
+SWIFTPROOF_REVIEWER_ENDPOINT and SWIFTPROOF_REVIEWER_MODEL override that policy, and
+the API key comes from the api_key_env variable or its /run/secrets/<NAME> Docker secret.
 The reviewer sends bounded, redacted source context to its configured API.
 Use --reviewer=false to disable it. Lint never calls a provider.
 Use 'swiftproof <command> --help' for options.
@@ -116,7 +118,7 @@ func analyze(ctx context.Context, mode string, args []string, out, errOut io.Wri
 	format := f.String("format", "markdown,json", "comma-separated output formats: markdown,json")
 	ci := f.Bool("ci", false, "return 2 when human review is required")
 	checks := f.Bool("checks", mode == "review", "run configured checks in the Docker sandbox")
-	useReviewer := f.Bool("reviewer", false, "use LLM investigation (default: enabled for review when reviewer.model is configured); --reviewer=false disables provider calls")
+	useReviewer := f.Bool("reviewer", false, "use LLM investigation (default: enabled for review when a model is configured in policy or the environment); --reviewer=false disables provider calls")
 	maxIterations := f.Int("max-iterations", 0, "override LLM iteration budget (1..100)")
 	intent := f.String("intent", "", "PR intent or acceptance criteria")
 	intentFile := f.String("intent-file", "", "UTF-8 file containing PR intent")
@@ -188,19 +190,30 @@ func analyze(ctx context.Context, mode string, args []string, out, errOut io.Wri
 			reviewerExplicit = true
 		}
 	})
+	// Endpoint, model and credential come from the deployment: the same image
+	// and the same trusted policy are pointed at the operator's provider
+	// without a policy change. A misconfigured secret fails the run here
+	// rather than downgrading it to an unauthenticated request.
+	provider, err := cfg.ResolveReviewer(os.Getenv, os.ReadFile)
+	if err != nil {
+		return fail(errOut, 3, "%v", err)
+	}
 	if !reviewerExplicit {
-		*useReviewer = mode == "review" && cfg.Reviewer.Model != ""
+		*useReviewer = mode == "review" && provider.Model != ""
 	}
 	if mode == "lint" && (*checks || *useReviewer) {
 		return fail(errOut, 3, "lint does not execute checks or a reviewer; use review")
 	}
-	if *useReviewer && cfg.Reviewer.Model == "" {
-		return fail(errOut, 3, "reviewer.model must be configured before using --reviewer")
+	if *useReviewer && provider.Model == "" {
+		return fail(errOut, 3, "reviewer.model must be configured in policy or %s before using --reviewer", config.ModelEnv)
 	}
-	reviewerOptions := reviewer.Options{Endpoint: cfg.Reviewer.Endpoint, Model: cfg.Reviewer.Model, APIKey: os.Getenv(cfg.Reviewer.APIKeyEnv), MaxIterations: cfg.Reviewer.MaxIterations, Timeout: time.Duration(cfg.Reviewer.TimeoutSeconds) * time.Second, MaxInputBytes: cfg.Reviewer.MaxInputBytes}
+	reviewerOptions := reviewer.Options{Endpoint: provider.Endpoint, Model: provider.Model, APIKey: provider.APIKey, MaxIterations: cfg.Reviewer.MaxIterations, Timeout: time.Duration(cfg.Reviewer.TimeoutSeconds) * time.Second, MaxInputBytes: cfg.Reviewer.MaxInputBytes}
 	if *useReviewer {
 		if err := reviewer.Validate(reviewerOptions); err != nil {
 			return fail(errOut, 3, "%v", err)
+		}
+		if len(provider.Sources) > 0 {
+			fmt.Fprintf(errOut, "Reviewer configuration: %s.\n", strings.Join(provider.Sources, ", "))
 		}
 	}
 	output := *outDir

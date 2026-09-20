@@ -4,8 +4,10 @@ package config
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"path"
 	"strings"
 
@@ -23,6 +25,28 @@ type Sandbox struct {
 	MemoryMB          int    `json:"memory_mb"`
 	CPUs              int    `json:"cpus"`
 }
+
+// The provider belongs to the deployment, not to the reviewed repository: one
+// image and one committed policy are pointed at the operator's endpoint and
+// model through these variables, and at its credential through a Docker
+// secret. Everything else — image, commands, budgets, sensitive paths — stays
+// a decision of the trusted baseline policy. Neither name ends in a suffix the
+// Swarm deployment treats as sensitive, so both stay plain variables.
+const (
+	EndpointEnv = "SWIFTPROOF_REVIEWER_ENDPOINT"
+	ModelEnv    = "SWIFTPROOF_REVIEWER_MODEL"
+)
+
+// The credential follows the cluster's secret convention: the deployment turns
+// a variable whose name ends in _KEY (here reviewer.api_key_env, by default
+// SWIFTPROOF_API_KEY) into a Docker secret, drops it from the container
+// environment and mounts its value at /run/secrets/<NAME>. <NAME>_FILE names
+// that file explicitly when it is mounted under a different target.
+const (
+	SecretsDir    = "/run/secrets"
+	FileEnvSuffix = "_FILE"
+)
+
 type Reviewer struct {
 	Endpoint          string `json:"endpoint"`
 	Model             string `json:"model"`
@@ -32,6 +56,7 @@ type Reviewer struct {
 	TimeoutSeconds    int    `json:"timeout_seconds"`
 	MaxInputBytes     int    `json:"max_input_bytes"`
 }
+
 type Config struct {
 	Version        int                 `json:"version"`
 	Language       string              `json:"language"`
@@ -189,7 +214,10 @@ func (c Config) Validate() error {
 	if r.TimeoutSeconds < 1 || r.TimeoutSeconds > 1800 || r.MaxInputBytes < 4096 || r.MaxInputBytes > 2<<20 {
 		return fmt.Errorf("reviewer time/input limits are out of bounds")
 	}
-	if r.APIKeyEnv == "" || strings.ContainsAny(r.APIKeyEnv, "=\x00\r\n") {
+	// An empty name disables the credential entirely, for a local provider
+	// that takes none. Otherwise the name has to survive being pasted into a
+	// compose file and appended to /run/secrets/.
+	if strings.ContainsAny(r.APIKeyEnv, "=/\\ \t\x00\r\n") {
 		return fmt.Errorf("reviewer.api_key_env must be an environment variable name")
 	}
 	for _, p := range c.SensitivePaths {
@@ -201,4 +229,91 @@ func (c Config) Validate() error {
 		}
 	}
 	return nil
+}
+
+// Runtime is the reviewer configuration a run actually uses: the committed
+// policy after the deployment environment and the Docker secret are applied.
+// Sources records where each value that did not come from the policy was
+// taken from — the variable or file name, never the value itself.
+type Runtime struct {
+	Endpoint string
+	Model    string
+	APIKey   string
+	Sources  []string
+}
+
+// ResolveReviewer applies the deployment environment over the trusted policy.
+// getenv and readFile are injected so resolution is testable without touching
+// the process environment or the filesystem.
+//
+// The credential is looked up the way the cluster's own loader does it: a
+// variable present in the environment wins, then <NAME>_FILE if the secret is
+// mounted under another target, then /run/secrets/<NAME>, which is where the
+// deployment mounts the secret it created from that variable. A file named
+// explicitly must be readable; the conventional path simply being absent is
+// not an error, but a mounted file that cannot be used is always reported
+// instead of being silently skipped.
+func (c Config) ResolveReviewer(getenv func(string) string, readFile func(string) ([]byte, error)) (Runtime, error) {
+	if getenv == nil {
+		getenv = func(string) string { return "" }
+	}
+	if readFile == nil {
+		readFile = func(string) ([]byte, error) { return nil, fs.ErrNotExist }
+	}
+	r := Runtime{Endpoint: c.Reviewer.Endpoint, Model: c.Reviewer.Model}
+	if v := strings.TrimSpace(getenv(EndpointEnv)); v != "" {
+		r.Endpoint = v
+		r.Sources = append(r.Sources, "endpoint from "+EndpointEnv)
+	}
+	// A blank variable means "unset", so an exported-but-empty value in a
+	// compose file cannot silently disable the reviewer configured in policy.
+	if v := strings.TrimSpace(getenv(ModelEnv)); v != "" {
+		r.Model = v
+		r.Sources = append(r.Sources, "model from "+ModelEnv)
+	}
+	name := strings.TrimSpace(c.Reviewer.APIKeyEnv)
+	if name == "" {
+		return r, nil
+	}
+	if key := getenv(name); key != "" {
+		r.APIKey = key
+		r.Sources = append(r.Sources, "API key from "+name)
+		return r, nil
+	}
+	file, explicit := strings.TrimSpace(getenv(name+FileEnvSuffix)), true
+	if file == "" {
+		file, explicit = SecretsDir+"/"+name, false
+	}
+	key, err := readSecret(file, readFile)
+	switch {
+	case err == nil:
+		r.APIKey = key
+		r.Sources = append(r.Sources, "API key from "+file)
+	case explicit || !errors.Is(err, fs.ErrNotExist):
+		return Runtime{}, fmt.Errorf("reviewer API key secret %s: %w", file, err)
+	}
+	return r, nil
+}
+
+// A Docker secret is a file whose whole content is the credential, and both
+// the deployment and editors routinely leave a trailing newline, so
+// surrounding whitespace is not part of the key. Anything else that would make
+// the key unusable as an Authorization header is rejected here, where the file
+// can be named, rather than inside the request.
+func readSecret(file string, readFile func(string) ([]byte, error)) (string, error) {
+	data, err := readFile(file)
+	if err != nil {
+		return "", err
+	}
+	if len(data) > 8192 {
+		return "", fmt.Errorf("secret exceeds 8 KiB")
+	}
+	key := strings.TrimSpace(string(data))
+	if key == "" {
+		return "", fmt.Errorf("secret is empty")
+	}
+	if strings.ContainsAny(key, "\r\n\x00") {
+		return "", fmt.Errorf("secret must be a single line")
+	}
+	return key, nil
 }

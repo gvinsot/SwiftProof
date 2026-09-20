@@ -2,7 +2,9 @@ package config
 
 import (
 	"encoding/json"
+	"io/fs"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -131,5 +133,109 @@ func TestDecodeWithoutCoverageStaysValid(t *testing.T) {
 	}
 	if err := got.Validate(); err != nil {
 		t.Fatalf("legacy policy without a coverage command does not validate: %v", err)
+	}
+}
+
+// The deployment, not the reviewed repository, owns the provider: endpoint and
+// model arrive as variables and the credential as a mounted Docker secret,
+// while the trusted policy keeps deciding everything else.
+func TestResolveReviewerFromDeployment(t *testing.T) {
+	const secret = "/run/secrets/SWIFTPROOF_API_KEY"
+	files := map[string]string{
+		secret:             "secret-key\n",
+		"/run/secrets/alt": "alt-key",
+		"/run/secrets/bad": "line\nbreak",
+		"/run/secrets/nil": "  \n",
+	}
+	read := func(name string) ([]byte, error) {
+		content, ok := files[name]
+		if !ok {
+			return nil, fs.ErrNotExist
+		}
+		return []byte(content), nil
+	}
+	for name, tc := range map[string]struct {
+		env                     map[string]string
+		wantEndpoint, wantModel string
+		wantKey, wantSource     string
+		wantErr                 string
+	}{
+		"policy alone": {
+			wantEndpoint: "https://api.openai.com/v1/chat/completions"},
+		"environment overrides policy": {
+			env:          map[string]string{EndpointEnv: "https://provider.internal/v1", ModelEnv: "deployed-model"},
+			wantEndpoint: "https://provider.internal/v1", wantModel: "deployed-model",
+			wantKey: "secret-key", wantSource: "endpoint from " + EndpointEnv},
+		"blank variables leave policy in place": {
+			env:          map[string]string{EndpointEnv: "  ", ModelEnv: ""},
+			wantEndpoint: "https://api.openai.com/v1/chat/completions", wantKey: "secret-key"},
+		"mounted secret supplies the credential": {
+			env:          map[string]string{},
+			wantEndpoint: "https://api.openai.com/v1/chat/completions",
+			wantKey:      "secret-key", wantSource: "API key from " + secret},
+		"variable wins over the mounted secret": {
+			env:          map[string]string{"SWIFTPROOF_API_KEY": "environment-key"},
+			wantEndpoint: "https://api.openai.com/v1/chat/completions",
+			wantKey:      "environment-key", wantSource: "API key from SWIFTPROOF_API_KEY"},
+		"secret mounted under another target": {
+			env:          map[string]string{"SWIFTPROOF_API_KEY_FILE": "/run/secrets/alt"},
+			wantEndpoint: "https://api.openai.com/v1/chat/completions",
+			wantKey:      "alt-key", wantSource: "API key from /run/secrets/alt"},
+		"explicitly named secret must exist": {
+			env:     map[string]string{"SWIFTPROOF_API_KEY_FILE": "/run/secrets/absent"},
+			wantErr: "reviewer API key secret /run/secrets/absent"},
+		"unusable secret is reported": {
+			env:     map[string]string{"SWIFTPROOF_API_KEY_FILE": "/run/secrets/bad"},
+			wantErr: "secret must be a single line"},
+		"empty secret is reported": {
+			env:     map[string]string{"SWIFTPROOF_API_KEY_FILE": "/run/secrets/nil"},
+			wantErr: "secret is empty"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			c := Default("go")
+			get := func(variable string) string { return tc.env[variable] }
+			// Without an environment there is no secrets directory either: a
+			// developer running the binary locally keeps the policy values.
+			source := read
+			if tc.env == nil {
+				source = func(string) ([]byte, error) { return nil, fs.ErrNotExist }
+			}
+			got, err := c.ResolveReviewer(get, source)
+			if tc.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("error is %v, want one containing %q", err, tc.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("resolution failed: %v", err)
+			}
+			if got.Endpoint != tc.wantEndpoint || got.Model != tc.wantModel || got.APIKey != tc.wantKey {
+				t.Fatalf("resolved %q/%q/%q, want %q/%q/%q", got.Endpoint, got.Model, got.APIKey, tc.wantEndpoint, tc.wantModel, tc.wantKey)
+			}
+			joined := strings.Join(got.Sources, "; ")
+			if tc.wantSource != "" && !strings.Contains(joined, tc.wantSource) {
+				t.Fatalf("sources are %q, want one containing %q", joined, tc.wantSource)
+			}
+			// Sources are printed and may be logged: they name where a value
+			// came from, never the credential itself.
+			if got.APIKey != "" && strings.Contains(joined, got.APIKey) {
+				t.Fatalf("sources disclose the credential: %q", joined)
+			}
+		})
+	}
+}
+
+// An absent secret leaves the environment variable in charge, so a shell or CI
+// setup that never mounts one keeps working unchanged.
+func TestResolveReviewerWithoutSecretsDirectory(t *testing.T) {
+	c := Default("go")
+	c.Reviewer.Model = "policy-model"
+	got, err := c.ResolveReviewer(func(string) string { return "" }, nil)
+	if err != nil {
+		t.Fatalf("absent secret must not fail the run: %v", err)
+	}
+	if got.Model != "policy-model" || got.APIKey != "" || len(got.Sources) != 0 {
+		t.Fatalf("resolved %+v, want the policy model and no credential", got)
 	}
 }
