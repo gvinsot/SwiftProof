@@ -69,13 +69,13 @@ Start with the flagged lines and the reason for each review target. These signal
 
 - Immutable Git comparisons: renames, deletions, binaries and merge-base semantics.
 - Go AST comparison of exported declarations and changed security/payment function bodies, plus labelled lexical risk signals and branch-growth heuristics across text files.
-- Signals for sensitive paths, dependencies, network/DB calls, authentication, removed validation/error handling, unsafe constructs and missing associated changed tests.
+- Signals for sensitive paths, dependencies, network/DB calls, authentication, removed validation/error handling, unsafe constructs, missing associated changed tests, and added Go lines that a recorded coverage run did not execute.
 - Configured test, typecheck and build commands executed as argv arrays in disposable containers.
 - An optional reviewer with bounded source/search/test tools and temporary generated tests.
 - Differential evidence: a generated test passing on baseline and failing on candidate can support a reproduced issue. Missing evidence remains **UNVERIFIED**.
 - Deduplicated review ranges with old/new coordinates and counts of actual changed lines.
 
-Go analysis is syntactic, not whole-program type or call-graph analysis. TypeScript support is lexical in this version. Signals are reasons to investigate, not confirmed bugs. Missing test changes do not establish missing coverage.
+Go analysis is syntactic, not whole-program type or call-graph analysis. TypeScript support is lexical in this version. Signals are reasons to investigate, not confirmed bugs. Missing test changes do not establish missing coverage. A recorded coverage run establishes only which added lines ran and which did not; neither establishes that a line is tested.
 
 ## Commands
 
@@ -111,6 +111,24 @@ Commands are argv arrays, not shell strings. Configure only checks your project 
 Sandbox networking requires both `sandbox.network: true` and `--allow-network`. `--no-network` forces it off. This controls test containers; a configured reviewer separately makes provider HTTP requests from the CLI. Use `--reviewer=false` to disable those calls.
 
 Trust and preferably digest-pin the preloaded image. Prepare dependencies in it outside review execution and configure commands to use them. Stock Node/Python images do not contain project dependencies; their commands must be adapted accordingly.
+
+### Changed-line execution (optional `coverage` command)
+
+Add a `coverage` command to the trusted policy to measure which **added** Go lines a recorded sandbox run actually executed. Its argv must contain the token `{coverage_out}` exactly once:
+
+```json
+{
+  "commands": {
+    "coverage": ["go", "test", "-covermode=count", "-coverprofile={coverage_out}", "./..."]
+  }
+}
+```
+
+SwiftProof expands `{coverage_out}` to the in-container profile path and never appends a coverage flag of its own, so the executed argv equals the argv you reviewed. That fragment is the Go default written by `swiftproof init --language go`. Adding `-coverpkg=./...` is your choice and is what attributes execution across packages: without it, a line exercised only through another package's tests is reported as not executed.
+
+The coverage command runs **last and in addition to** `test`, so it roughly doubles sandbox time against `sandbox.max_runtime_seconds`; raise that budget before enabling it. An existing `.swiftproof.json` does **not** acquire the key automatically: `init` refuses to overwrite an existing file, and policy decoding starts from an empty command map rather than merging the defaults. Add the key by hand, and read the release-ordering rule in [CI integration](docs/CI.md) first — an older pinned binary rejects the key with exit 3.
+
+Each added Go line in a changed non-test file is reported in exactly one of four states: **executed**, **not executed**, **not inside any instrumented block**, or **not measured**. Absent, truncated, unparsable or unmapped profile data is always reported as *not measured*, never as not executed. Executed means the line ran at least once; it does not mean the line is tested, asserted, correct or safe.
 
 ## Optional AI investigation
 
@@ -149,11 +167,14 @@ The LLM can investigate business rules and interactions beyond static patterns a
 
 ## Boundaries and development
 
+For the coding-to-deployment workflow, see the [agent loop](docs/AGENT_WORKFLOW.md),
+[reusable PR workflow](docs/CI.md) and [PulsarCD integration](docs/PULSARCD.md).
+
 Containers run non-root, without network by default, with read-only source/root mounts, no added capabilities and CPU/RAM/PID/time limits. The Docker socket, working checkout and API keys are never mounted. See [security boundaries](docs/SECURITY.md).
 
 Generated tests cannot overwrite source. Baseline and candidate runs use fresh environments. Go experiments select the generated test names and verify their actual execution from structured test events. Other frameworks can execute experiments but remain `UNVERIFIED` until equivalent execution validation exists. Reproductions retain test source and hashed artifacts. Reviewers still judge whether a test's assertion reflects intended behavior.
 
-Execution snapshots currently reject symlinks/submodules. Large inputs fail explicitly or emit analysis-limit signals. There is no automatic dependency installation, semantic TypeScript engine, global call graph, coverage proof, formal verification, automatic merge or PR comment publishing.
+Execution snapshots currently reject symlinks/submodules. Large inputs fail explicitly or emit analysis-limit signals. There is no automatic dependency installation, semantic TypeScript engine, global call graph, coverage proof, coverage threshold gate, formal verification, automatic merge or PR comment publishing. Changed-line execution is measured for Go only when a coverage command is present in the trusted policy; repositories whose `.swiftproof.json` predates this release measure nothing until that policy is updated by hand. An executed line is an observation, not proof that it is tested.
 
 ```sh
 go test ./...

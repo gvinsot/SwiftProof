@@ -2,13 +2,15 @@
 
 SwiftProof treats candidate code, generated tests, model output and repository text as untrusted. Static analysis uses immutable Git objects with external diff/textconv disabled. Execution uses Docker only; the source checkout is never executed or mounted.
 
-Policy comes from the comparison baseline unless the caller explicitly supplies `--config`. A baseline is a trust decision: select a trusted commit and pin the binary used in CI. Candidate policy changes cannot implicitly alter image, commands, provider or budgets.
+Policy comes from the comparison baseline unless the caller explicitly supplies `--config`. A baseline is a trust decision: select a trusted commit and pin the binary used in CI. Candidate policy changes cannot implicitly alter image, commands, provider or budgets. A nonempty `reviewer.model` in this trusted policy enables provider requests automatically during `review`. Use `--reviewer=false` to disable them for a run. `lint` never calls the provider. `--no-network` applies only to sandbox containers.
 
 Containers use a non-root UID, `--network none`, read-only source/root mounts, bounded tmpfs workspace, `--cap-drop=ALL`, `no-new-privileges`, CPU/memory/PID limits and forced cleanup. These controls follow the [Docker run reference](https://docs.docker.com/reference/cli/docker/container/run/) and [network isolation documentation](https://docs.docker.com/engine/network/drivers/none/). Docker shares a kernel; hostile multi-tenant submissions may require disposable VMs. See [Docker Engine security](https://docs.docker.com/engine/security/).
 
 Trust the preloaded image and its environment, files and dependencies. Never bake credentials into it. SwiftProof does not pull images or install dependencies automatically. Compromised dependencies can influence experiments; tests remain observations, not mathematical proofs.
 
 Known credential paths are excluded from readable/executable snapshots. Common tokens, passwords and private-key patterns are masked in outputs, reports and provider context. This is best effort: custom secret formats, encodings and deliberate transformations may escape masking. Avoid remote reviewers when transmitting source is unacceptable.
+
+A coverage profile is written by the candidate revision's own test suite and is untrusted input. It can move verdicts in both directions: fabricated execution suppresses a signal, and fabricated non-execution manufactures one. Coverage data may therefore add signals and add sentences; it may never delete a signal, lower a severity, support a dismissal or mark anything resolved, and no conclusion is drawn from a line being executed. The profile leaves the sandbox only as a length-declared framed payload on the container's standard output, separately bounded and derived from `sandbox.max_output_bytes`; repository code gains no writable host path, no volume and no container that outlives the run.
 
 Generated tests create new test paths only and run against separate baseline/candidate copies. A misleading assertion can cause a differential failure; humans must evaluate its relevance. Recognized build/setup failures, timeouts, missing dependencies and inconclusive baseline failures do not establish a reproduced behavioral issue. Arbitrary framework output cannot always be classified reliably.
 

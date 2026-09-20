@@ -8,6 +8,8 @@ import (
 	"io"
 	"path"
 	"strings"
+
+	"github.com/gvinsot/SwiftProof/internal/coverage"
 )
 
 const Filename = ".swiftproof.json"
@@ -48,7 +50,9 @@ func Default(language string) Config {
 	}
 	switch language {
 	case "go":
-		c.Commands = map[string][]string{"test": {"go", "test", "./..."}, "typecheck": {"go", "vet", "./..."}, "build": {"go", "build", "./..."}, "generated_test": {"go", "test", "{package}"}}
+		// Coverage is Go-only: the stock Node and Python images ship no coverage
+		// tool, so a seeded default there would exit 127 and force exit 4.
+		c.Commands = map[string][]string{"test": {"go", "test", "./..."}, "typecheck": {"go", "vet", "./..."}, "build": {"go", "build", "./..."}, "generated_test": {"go", "test", "{package}"}, coverage.CommandKey: {"go", "test", "-covermode=count", "-coverprofile=" + coverage.Placeholder, "./..."}}
 	case "typescript", "javascript":
 		c.Sandbox.Image = "node:22-bookworm"
 		c.Commands = map[string][]string{"test": {"npm", "test"}, "build": {"npm", "run", "build"}}
@@ -146,16 +150,23 @@ func (c Config) Validate() error {
 		return fmt.Errorf("unsupported configuration version %d", c.Version)
 	}
 	for name, argv := range c.Commands {
-		if name != "test" && name != "typecheck" && name != "build" && name != "generated_test" {
+		if name != "test" && name != "typecheck" && name != "build" && name != "generated_test" && name != coverage.CommandKey {
 			return fmt.Errorf("unknown command %q", name)
 		}
 		if len(argv) == 0 || strings.TrimSpace(argv[0]) == "" || len(argv) > 128 {
 			return fmt.Errorf("command %s must be a nonempty argv array (at most 128 arguments)", name)
 		}
+		placeholders := 0
 		for _, arg := range argv {
 			if strings.ContainsRune(arg, 0) || len(arg) > 16384 {
 				return fmt.Errorf("invalid argument in command %s", name)
 			}
+			placeholders += strings.Count(arg, coverage.Placeholder)
+		}
+		// The executed argv is the reviewed argv: SwiftProof expands the token
+		// the operator wrote and never appends a coverage flag of its own.
+		if name == coverage.CommandKey && placeholders != 1 {
+			return fmt.Errorf("command %s must write its profile to %s", coverage.CommandKey, coverage.Placeholder)
 		}
 	}
 	s := c.Sandbox

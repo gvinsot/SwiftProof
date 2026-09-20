@@ -43,6 +43,10 @@ Focused review: **2 / 2 changed lines**.
 
 Distinct changed coordinates; removed and added lines count separately. Focused review is a prioritization aid, not proof that the remaining diff is correct. NOT\_REPRODUCED means only that the recorded experiment did not reproduce the concern.
 
+## Changed-line Execution
+
+No coverage command is configured, so changed-line execution was not measured.
+
 ## Recorded Evidence
 
 

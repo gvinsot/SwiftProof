@@ -22,6 +22,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/gvinsot/SwiftProof/internal/coverage"
 	"github.com/gvinsot/SwiftProof/internal/model"
 )
 
@@ -50,6 +51,10 @@ type execution struct {
 }
 type executor func(context.Context, string, []string, io.Writer) execution
 
+// captureExecutor keeps the container's standard output, which carries the
+// framed coverage payload, on a separate host descriptor from its log.
+type captureExecutor func(context.Context, string, []string, io.Writer, io.Writer) execution
+
 type Harness struct {
 	mu                    sync.Mutex
 	opts                  Options
@@ -64,6 +69,7 @@ type Harness struct {
 	spent                 time.Duration
 	closed                bool
 	execute               executor
+	executeCapture        captureExecutor
 }
 
 func New(opts Options) (*Harness, error) {
@@ -108,7 +114,7 @@ func New(opts Options) (*Harness, error) {
 	if err != nil {
 		return nil, err
 	}
-	h := &Harness{opts: opts, root: root, candidate: filepath.Join(root, "candidate"), runID: randomID(), tests: map[string]*generatedTest{}, execute: dockerExecute}
+	h := &Harness{opts: opts, root: root, candidate: filepath.Join(root, "candidate"), runID: randomID(), tests: map[string]*generatedTest{}, execute: dockerExecute, executeCapture: dockerExecuteCapture}
 	if err = copySnapshot(opts.CandidateDir, h.candidate); err != nil {
 		os.RemoveAll(root)
 		return nil, fmt.Errorf("candidate snapshot: %w", err)
@@ -175,8 +181,18 @@ func (h *Harness) Run(ctx context.Context, kind string) model.Check {
 }
 
 func (h *Harness) run(ctx context.Context, kind, dir string, command []string) model.Check {
+	c, _, _ := h.runWith(ctx, kind, dir, command, false)
+	return c
+}
+
+// runWith executes one command. When withCoverage is set the container returns
+// the coverage profile on its own bounded payload channel; the returned bytes
+// are raw and unredacted so the profile can be parsed and hashed before any
+// display transformation touches it.
+func (h *Harness) runWith(ctx context.Context, kind, dir string, command []string, withCoverage bool) (model.Check, []byte, bool) {
 	c := model.Check{ID: fmt.Sprintf("check-%d", len(h.checks)+1), Kind: kind, Command: append([]string(nil), command...), ExitCode: -1}
 	started := time.Now()
+	var payload *boundedWriter
 	for i, arg := range c.Command {
 		c.Command[i] = Redact(arg)
 	}
@@ -199,7 +215,13 @@ func (h *Harness) run(ctx context.Context, kind, dir string, command []string) m
 		runCtx, cancel := context.WithTimeout(ctx, timeout)
 		name := "swiftproof-" + randomID()
 		out := &boundedWriter{limit: h.opts.MaxOutputBytes}
-		result := h.execute(runCtx, name, h.dockerArgs(name, dir, command), out)
+		var result execution
+		if withCoverage {
+			payload = &boundedWriter{limit: coverageLimit(h.opts.MaxOutputBytes)}
+			result = h.executeCapture(runCtx, name, h.dockerArgsCoverage(name, dir, command), out, payload)
+		} else {
+			result = h.execute(runCtx, name, h.dockerArgs(name, dir, command), out)
+		}
 		cancel()
 		c.ExitCode, c.Truncated, c.Output = result.ExitCode, out.truncated, Redact(string(out.data))
 		switch {
@@ -230,10 +252,99 @@ func (h *Harness) run(ctx context.Context, kind, dir string, command []string) m
 		}
 	}
 	h.checks = append(h.checks, c)
-	return c
+	if payload == nil {
+		return c, nil, false
+	}
+	return c, payload.data, payload.truncated
 }
 
+// coverageLimit derives the payload budget from trusted policy rather than
+// introducing an unconfigurable host buffer. A real profile runs to hundreds of
+// kilobytes, far beyond a log budget.
+func coverageLimit(maxOutputBytes int) int {
+	limit := 16 * maxOutputBytes
+	if limit < 256*1024 {
+		limit = 256 * 1024
+	}
+	if limit > 4*1024*1024 {
+		limit = 4 * 1024 * 1024
+	}
+	return limit
+}
+
+// RunCoverage executes the configured coverage command and returns the recorded
+// check, the raw profile the container emitted, and the reason no measurement is
+// available. A profile that cannot be retained as a hashed artifact is
+// discarded: a coverage claim with no recorded evidence is unfalsifiable.
+func (h *Harness) RunCoverage(ctx context.Context) (model.Check, []byte, string, string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	started := time.Now()
+	command := append([]string(nil), h.opts.Commands[coverage.CommandKey]...)
+	for i, arg := range command {
+		command[i] = strings.ReplaceAll(arg, coverage.Placeholder, coverage.ProfilePath)
+	}
+	c, payload, truncated := h.runWith(ctx, coverage.CommandKey, h.candidate, command, true)
+	h.audit = append(h.audit, model.AuditEvent{Time: started.UTC(), Tool: "run_" + coverage.CommandKey, Status: c.Status, DurationMS: time.Since(started).Milliseconds()})
+	if c.Status != "PASS" && c.Status != "FAIL" {
+		// Report the recorded status rather than paraphrase it: a TIMEOUT did run,
+		// and an ERROR can mean the command ran but its log could not be retained.
+		return c, nil, "", fmt.Sprintf("the coverage run did not complete (%s): %s", c.Status, truncateUTF8(strings.TrimSpace(c.Output), 200))
+	}
+	profile, err := coverage.DecodeFrame(payload, truncated)
+	if err == nil {
+		// Validate before labelling: an artifact recorded as a coverage profile
+		// must be one, or the evidence record contradicts the report.
+		_, err = coverage.ParseGoProfile(profile)
+	}
+	if err != nil {
+		h.rejectPayload(c.ID, payload)
+		return c, nil, "", err.Error()
+	}
+	if err := h.saveArtifact(c.ID+"-coverage.out", "coverage_profile", profile); err != nil {
+		return c, nil, "", coverage.ErrArtifact.Error()
+	}
+	return c, profile, h.artifacts[len(h.artifacts)-1].SHA256, ""
+}
+
+// rejectPayload retains a bounded, redacted copy of what did arrive so a
+// not-measured verdict stays auditable rather than merely asserted.
+func (h *Harness) rejectPayload(checkID string, payload []byte) {
+	if len(payload) == 0 {
+		return
+	}
+	_ = h.saveArtifact(checkID+"-coverage-rejected.txt", "coverage_payload_rejected", []byte(truncateUTF8(Redact(string(payload)), 4096)))
+}
+
+// wrapperScript copies the sanitized read-only source into the ephemeral
+// workspace and replaces itself with the configured command.
+const wrapperScript = `cp -R /source/. /workspace/ && exec "$@"`
+
+// coverageScript differs from wrapperScript in exactly one respect: it returns
+// the profile the command wrote as a length-declared frame on the container's
+// standard output, while the command's own output goes to standard error. It
+// adds no mount, no volume, no writable host path and no surviving container.
+// It is built from the frame constants so the producer and the decoder cannot
+// drift apart.
+var coverageScript = `cp -R /source/. /workspace/ 1>&2 || exit 125; "$@" >&2; s=$?; if [ -s ` + coverage.ProfilePath +
+	` ]; then set -- $(wc -c < ` + coverage.ProfilePath + `); printf '` + coverage.FrameHeader + `%s\n' "$1"; cat ` +
+	coverage.ProfilePath + `; printf '%s\n' '` + strings.TrimSuffix(coverage.FrameFooter, "\n") + `'; fi; exit $s`
+
 func (h *Harness) dockerArgs(name, dir string, command []string) []string {
+	return h.dockerArgsScript(name, dir, wrapperScript, command)
+}
+
+// dockerArgsCoverage keeps every isolation flag of dockerArgs; only the wrapper
+// script differs. Both call one builder so a boundary flag can never be present
+// on one path and missing on the other.
+func (h *Harness) dockerArgsCoverage(name, dir string, command []string) []string {
+	return h.dockerArgsScript(name, dir, coverageScript, command)
+}
+
+// No -i and no -t is ever passed: the docker CLI only keeps the container's
+// standard output and standard error on separate host descriptors without a
+// TTY, and the coverage payload channel depends on that separation.
+func (h *Harness) dockerArgsScript(name, dir, script string, command []string) []string {
 	network := "none"
 	if h.opts.Network {
 		network = "bridge"
@@ -242,13 +353,23 @@ func (h *Harness) dockerArgs(name, dir string, command []string) []string {
 	if !h.opts.Network {
 		args = append(args, "--env=GOTOOLCHAIN=local", "--env=GOPROXY=off", "--env=GOSUMDB=off")
 	}
-	args = append(args, "--entrypoint=/bin/sh", h.opts.Image, "-c", `cp -R /source/. /workspace/ && exec "$@"`, "swiftproof")
+	args = append(args, "--entrypoint=/bin/sh", h.opts.Image, "-c", script, "swiftproof")
 	return append(args, command...)
 }
 
 func dockerExecute(ctx context.Context, name string, args []string, out io.Writer) execution {
+	return runDocker(ctx, name, args, out, out)
+}
+
+// dockerExecuteCapture keeps the container's standard output, which carries the
+// framed coverage payload, separate from its log.
+func dockerExecuteCapture(ctx context.Context, name string, args []string, log, payload io.Writer) execution {
+	return runDocker(ctx, name, args, payload, log)
+}
+
+func runDocker(ctx context.Context, name string, args []string, stdout, stderr io.Writer) execution {
 	cmd := exec.CommandContext(ctx, "docker", args...)
-	cmd.Stdout, cmd.Stderr = out, out
+	cmd.Stdout, cmd.Stderr = stdout, stderr
 	err := cmd.Run()
 	// A killed docker client does not stop its container. Always issue bounded cleanup.
 	cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

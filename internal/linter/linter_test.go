@@ -262,6 +262,117 @@ func TestEmptyAndCanceled(t *testing.T) {
 	}
 }
 
+// Merge is the single place where identity and ordering are decided, so a
+// coverage measurement may add signals and add sentences without silently
+// renaming, reordering or rewriting anything already reported.
+func TestMergeKeepsIDsAndOrder(t *testing.T) {
+	dir := t.TempDir()
+	git(t, dir, "init", "-b", "main")
+	git(t, dir, "config", "core.autocrlf", "false")
+	put(t, dir, "auth/service.go", "package auth\ntype User struct { Name string }\nfunc Login(name string) bool { return true }\n")
+	put(t, dir, "src/api.ts", "export function pay(input: string) {\n validateInput(input);\n return input;\n}\n")
+	base := commit(t, dir)
+	put(t, dir, "auth/service.go", "package auth\ntype User struct { Name string; Roles []string }\nfunc Login(name string, jwt string) bool { return true }\n")
+	put(t, dir, "src/api.ts", "export function pay(input: string) {\n // TODO: validate\n return fetch(\"https://service.invalid\") as any;\n}\n")
+	head := commit(t, dir)
+	repo, err := gitrepo.Open(context.Background(), dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	change, err := repo.Analyze(context.Background(), base, head, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	analyzed, err := Analyze(context.Background(), repo, change, []string{"**/auth/**"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(analyzed) < 4 {
+		t.Fatalf("expected several real signals to merge, got %+v", analyzed)
+	}
+	// Stand-ins for a recorded coverage measurement: one file sorting before
+	// every analyzed path, and two ranges inside a path the analysis already
+	// reported, so the merged order has to interleave rather than concatenate.
+	extra := []model.Signal{
+		{Kind: "uncovered_change", Path: "auth/service.go", Line: 3, EndLine: 3, Side: "new", Severity: "medium", Summary: "Added lines were not executed by any instrumented package in the coverage run", Evidence: "Go coverage profile reports execution count 0 for new-side lines 3-3. Executed means the line ran at least once."},
+		{Kind: "uncovered_change", Path: "app/entry.go", Line: 12, EndLine: 14, Side: "new", Severity: "medium", Summary: "Added lines were not executed by any instrumented package in the coverage run", Evidence: "Go coverage profile reports execution count 0 for new-side lines 12-14. Executed means the line ran at least once."},
+		{Kind: "uncovered_change", Path: "auth/service.go", Line: 2, EndLine: 2, Side: "new", Severity: "medium", Summary: "Added lines were not executed by any instrumented package in the coverage run", Evidence: "Go coverage profile reports execution count 0 for new-side lines 2-2. Executed means the line ran at least once."},
+	}
+	beforeMerge, _ := json.Marshal(analyzed)
+	merged := Merge(analyzed, extra)
+	if afterMerge, _ := json.Marshal(analyzed); string(afterMerge) != string(beforeMerge) {
+		t.Fatalf("Merge mutated the signals handed to it: %s != %s", afterMerge, beforeMerge)
+	}
+	if len(merged) != len(analyzed)+len(extra) {
+		t.Fatalf("merge dropped or duplicated signals: %d + %d became %d", len(analyzed), len(extra), len(merged))
+	}
+	// The identity recipe: kind, path, line, side, symbol, evidence. The same
+	// tuple is also the documented sort order, with the line compared
+	// numerically, so one key serves both assertions.
+	key := func(s model.Signal) string {
+		return strings.Join([]string{s.Path, fmt.Sprintf("%09d", s.Line), s.Side, s.Kind, s.Symbol, s.Evidence}, "\x00")
+	}
+	byID := map[string]model.Signal{}
+	for _, s := range merged {
+		if s.ID == "" {
+			t.Fatalf("merged signal has no identifier: %+v", s)
+		}
+		if prior, seen := byID[s.ID]; seen && key(prior) != key(s) {
+			t.Errorf("two different signals share identifier %s: %+v and %+v", s.ID, prior, s)
+		}
+		byID[s.ID] = s
+	}
+	for _, s := range analyzed {
+		got, ok := byID[s.ID]
+		if !ok {
+			t.Fatalf("merge changed the identifier of an unchanged signal: %+v", s)
+		}
+		if key(got) != key(s) {
+			t.Errorf("identifier %s now denotes a different signal: %+v instead of %+v", s.ID, got, s)
+		}
+	}
+	for i := 1; i < len(merged); i++ {
+		if key(merged[i-1]) > key(merged[i]) {
+			t.Errorf("merged order breaks path/line/side/kind/symbol/evidence: %+v precedes %+v", merged[i-1], merged[i])
+		}
+	}
+	first, err := json.Marshal(merged)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for n := 0; n < 4; n++ {
+		again, err := json.Marshal(Merge(analyzed, extra))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(again) != string(first) {
+			t.Fatalf("merge %d is not byte-identical: %s != %s", n, again, first)
+		}
+	}
+	// A requalified evidence string must be a new identity, never a silent
+	// mutation of the signal it was derived from.
+	original := model.Signal{Kind: "no_test_change", Path: "auth/service.go", Line: 3, Side: "new", Symbol: "Login", Severity: "low", Summary: "No nearby test file changed", Evidence: "No changed test file shares this source directory or filename stem. Existing test coverage has not been measured"}
+	requalified := original
+	requalified.Evidence = "No changed test file shares this source directory or filename stem. Changed-line execution was measured for this file in chk-1: of 4 added lines inside an instrumented block, 3 were executed at least once. Executing a line is not asserting its behavior."
+	pair := Merge([]model.Signal{original}, []model.Signal{requalified})
+	if len(pair) != 2 {
+		t.Fatalf("evidence-only difference collapsed into %d signals: %+v", len(pair), pair)
+	}
+	if pair[0].ID == pair[1].ID {
+		t.Errorf("requalified evidence reused the original identity %s: %+v", pair[0].ID, pair)
+	}
+	if pair[0].Evidence != requalified.Evidence || pair[1].Evidence != original.Evidence {
+		t.Errorf("evidence is not the final tiebreaker: %+v", pair)
+	}
+	empty := Merge(nil, nil)
+	if empty == nil || len(empty) != 0 {
+		t.Fatalf("Merge(nil, nil) = %+v, want a non-nil empty slice", empty)
+	}
+	if b, _ := json.Marshal(empty); string(b) != "[]" {
+		t.Fatalf("empty merge does not serialize as an empty array: %s", b)
+	}
+}
+
 func BenchmarkGoDeclarations(b *testing.B) {
 	source := []byte("package example\ntype Store interface { Read(string) ([]byte,error); Write(string,[]byte) error }\ntype Record struct { ID string; Data []byte }\nfunc Load(id string) (*Record,error) { return nil,nil }\n")
 	b.SetBytes(int64(len(source)))

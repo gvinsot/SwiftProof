@@ -13,6 +13,7 @@ import (
 	"strings"
 	"unicode"
 
+	"github.com/gvinsot/SwiftProof/internal/coverage"
 	"github.com/gvinsot/SwiftProof/internal/harness"
 	"github.com/gvinsot/SwiftProof/internal/model"
 )
@@ -95,6 +96,17 @@ func Finalize(r *model.Report, ci bool) {
 	}
 	r.Unverified = unique(r.Unverified)
 	r.ReviewTargets, r.ReviewSurface = targets(r)
+	// Coverage is recorded upstream and never recomputed here; a report written
+	// before this field existed is normalized to "nothing was measured".
+	if r.Coverage.Status == "" {
+		r.Coverage.Status = coverage.StatusNotConfigured
+	}
+	if r.Coverage.Note == "" {
+		r.Coverage.Note = coverage.Note
+	}
+	if r.Coverage.Files == nil {
+		r.Coverage.Files = []model.CoverageFile{}
+	}
 	if len(r.Change.Files) > 0 && len(r.Checks) == 0 {
 		needsHuman = true
 	}
@@ -348,6 +360,35 @@ func Markdown(r *model.Report) []byte {
 		fmt.Fprintf(&b, "- **%s** %s:%d–%d (%s): %s\n", inline(t.Severity), inline(t.Path), t.StartLine, t.EndLine, inline(t.Side), inline(strings.Join(t.Reasons, "; ")))
 	}
 	fmt.Fprintf(&b, "\n## Review Surface\n\nFocused review: **%d / %d changed lines**.\n\n%s\n", r.ReviewSurface.FocusedLines, r.ReviewSurface.ChangedLines, inline(r.ReviewSurface.Note))
+	line(&b, "\n## Changed-line Execution\n")
+	switch r.Coverage.Status {
+	case coverage.StatusMeasured:
+		fmt.Fprintf(&b, "Measured from check %s: of %d added Go lines, %d were executed at least once, %d were not executed, %d are not inside any instrumented block, %d could not be measured. %d removed lines cannot be executed by a candidate-side run and are excluded.\n\n",
+			inline(r.Coverage.CheckID), r.Coverage.AddedLines, r.Coverage.ExecutedLines, r.Coverage.NotExecutedLines, r.Coverage.NoBlockLines, r.Coverage.NotMeasuredLines, r.Coverage.RemovedLines)
+		// The list is filtered, so it says what it lists: a reader must not take
+		// a short list for a complete per-file breakdown. The counters above
+		// cover every file; the coverage JSON carries the full per-file table.
+		listed := 0
+		for _, f := range r.Coverage.Files {
+			if f.NotExecutedLines == 0 && f.Status != coverage.StatusNotMeasured {
+				continue
+			}
+			if listed == 0 {
+				line(&b, "Files with added lines that were not executed, or that could not be measured:\n")
+			}
+			listed++
+			fmt.Fprintf(&b, "- %s: %d executed, %d not executed, %d not inside any instrumented block, %d not measured\n", inline(f.Path), f.ExecutedLines, f.NotExecutedLines, f.NoBlockLines, f.NotMeasuredLines)
+		}
+		fmt.Fprintf(&b, "\n%s\n", inline(r.Coverage.Note))
+	case coverage.StatusNotMeasured:
+		if strings.TrimSpace(r.Coverage.Reason) == "" {
+			line(&b, "Changed-line execution was not measured. No reason was recorded.")
+			break
+		}
+		fmt.Fprintf(&b, "Changed-line execution was not measured: %s\n", inline(r.Coverage.Reason))
+	default:
+		line(&b, "No coverage command is configured, so changed-line execution was not measured.")
+	}
 	line(&b, "\n## Recorded Evidence\n")
 	for _, e := range r.Evidence {
 		fmt.Fprintf(&b, "- %s — %s (%s): %s\n", inline(e.ID), inline(e.Kind), inline(e.Status), inline(e.Description))

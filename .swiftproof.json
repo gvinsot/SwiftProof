@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "language": "go",
+  "commands": {
+    "test": ["go", "test", "./..."],
+    "typecheck": ["go", "vet", "./..."],
+    "build": ["go", "build", "./..."],
+    "generated_test": ["go", "test", "{package}"]
+  },
+  "sandbox": {
+    "image": "golang:1.26-bookworm@sha256:a688600ca24f8a4d3ca77f95b0dd40704a9fc787c826660eb7ba0b641b8b175d",
+    "network": false
+  },
+  "reviewer": {"model": ""},
+  "sensitive_paths": ["internal/config/**", "internal/harness/**", "internal/reviewer/**", ".github/workflows/**", ".swiftproof.json"]
+}

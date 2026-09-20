@@ -23,6 +23,7 @@
     "unverified": {"type": "array", "items": {"type": "string"}},
     "review_targets": {"type": "array", "items": {"$ref": "#/$defs/reviewTarget"}},
     "review_surface": {"$ref": "#/$defs/reviewSurface"},
+    "coverage": {"$ref": "#/$defs/coverage"},
     "artifacts": {"type": "array", "items": {"$ref": "#/$defs/artifact"}},
     "audit": {"type": "array", "items": {"$ref": "#/$defs/auditEvent"}},
     "exit_code": {
@@ -191,8 +192,43 @@
       "required": ["changed_lines", "focused_lines", "note"],
       "properties": {
         "changed_lines": {"$ref": "#/$defs/count", "description": "Distinct changed path/side/line coordinates; deletions and additions count separately."},
-        "focused_lines": {"$ref": "#/$defs/count", "description": "Distinct changed coordinates covered by prioritized targets; never a coverage or confidence percentage."},
+        "focused_lines": {"$ref": "#/$defs/count", "description": "Distinct changed coordinates covered by prioritized targets; a prioritization count, never a coverage or confidence percentage. Changed-line execution is reported separately in coverage and is not expressed as a percentage."},
         "note": {"type": "string"}
+      }
+    },
+    "coverage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "added_lines", "executed_lines", "not_executed_lines", "no_block_lines", "not_measured_lines", "removed_lines", "files", "note"],
+      "description": "Which added lines a recorded coverage run executed. Executed means the line ran at least once during that run; it is never a claim that behavior is asserted, correct or safe. Absent, truncated, unparsable or unmapped data is reported as not_measured and never as not executed.",
+      "properties": {
+        "status": {"type": "string", "enum": ["not_configured", "not_measured", "measured"]},
+        "reason": {"type": "string", "description": "Why nothing was measured. Present only when status is not_measured."},
+        "check_id": {"$ref": "#/$defs/id"},
+        "profile_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$", "description": "Host-computed digest of the retained coverage profile artifact."},
+        "command": {"type": "array", "items": {"type": "string"}, "description": "Redacted argv actually executed, after the profile-path token was expanded."},
+        "added_lines": {"$ref": "#/$defs/count", "description": "Added new-side lines of changed non-test Go files. Deleted lines are never measurable and are excluded; this is not review_surface.changed_lines."},
+        "executed_lines": {"$ref": "#/$defs/count", "description": "Added new-side lines inside at least one instrumented block that ran at least once during the recorded run. Never a claim that behavior is asserted, correct or safe."},
+        "not_executed_lines": {"$ref": "#/$defs/count", "description": "Added lines whose every containing instrumented block reported an execution count of zero."},
+        "no_block_lines": {"$ref": "#/$defs/count", "description": "Added lines of a measured file that no instrumented block covers. Not a claim that the source holds no executable statement."},
+        "not_measured_lines": {"$ref": "#/$defs/count", "description": "Added lines of a changed file the profile carried no block for; no execution claim is made about them."},
+        "removed_lines": {"$ref": "#/$defs/count", "description": "Deleted lines of in-scope files. A candidate-side run has no coordinate for them, so they are excluded from the four states."},
+        "files": {"type": "array", "items": {"$ref": "#/$defs/fileCoverage"}, "description": "Per-file breakdown, sorted by path and capped at 500 entries; the counters above always cover every file."},
+        "note": {"type": "string"}
+      }
+    },
+    "fileCoverage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "status", "added_lines", "executed_lines", "not_executed_lines", "no_block_lines", "not_measured_lines"],
+      "properties": {
+        "path": {"$ref": "#/$defs/path"},
+        "status": {"type": "string", "enum": ["measured", "not_measured"]},
+        "added_lines": {"$ref": "#/$defs/count"},
+        "executed_lines": {"$ref": "#/$defs/count"},
+        "not_executed_lines": {"$ref": "#/$defs/count"},
+        "no_block_lines": {"$ref": "#/$defs/count"},
+        "not_measured_lines": {"$ref": "#/$defs/count"}
       }
     },
     "artifact": {

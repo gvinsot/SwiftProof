@@ -1,0 +1,104 @@
+name: SwiftProof reusable review
+
+on:
+  workflow_call:
+    inputs:
+      base-sha:
+        type: string
+        default: ''
+      head-sha:
+        type: string
+        default: ''
+      reviewer:
+        description: Enable the configured provider (disabled for fork PRs)
+        type: boolean
+        default: false
+      enforce:
+        description: Fail on reproduced blockers or operational errors; code 2 still needs PR approval
+        type: boolean
+        default: false
+      sandbox-image:
+        type: string
+        default: golang:1.26-bookworm@sha256:a688600ca24f8a4d3ca77f95b0dd40704a9fc787c826660eb7ba0b641b8b175d
+    secrets:
+      reviewer-api-key:
+        required: false
+    outputs:
+      exit-code:
+        description: SwiftProof result, including 2 for human review required
+        value: ${{ jobs.review.outputs.exit-code }}
+
+permissions:
+  contents: read
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    outputs:
+      exit-code: ${{ steps.review.outputs.code }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ inputs.head-sha || github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Install trusted SwiftProof binary
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP"
+          curl --fail --location --retry 3 -o swiftproof.tar.gz \
+            https://github.com/gvinsot/SwiftProof/releases/download/v0.1.0/swiftproof-v0.1.0-linux-amd64.tar.gz
+          echo '27f7fdf8fceccae0f8fd2b7df2e6d67ebecb094afe12d26a923977f38290099d  swiftproof.tar.gz' | sha256sum --check
+          tar -xzf swiftproof.tar.gz
+          echo "$RUNNER_TEMP/swiftproof-v0.1.0-linux-amd64" >> "$GITHUB_PATH"
+      - name: Preload the trusted test image
+        env:
+          IMAGE: ${{ inputs.sandbox-image }}
+        run: |
+          docker pull "$IMAGE"
+          # Bootstrap PRs may predate the repository's pinned policy.
+          docker tag "$IMAGE" golang:1.26-bookworm
+      - name: Review immutable PR commits
+        id: review
+        shell: bash
+        env:
+          BASE_SHA: ${{ inputs.base-sha || github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ inputs.head-sha || github.event.pull_request.head.sha || github.sha }}
+          USE_REVIEWER: ${{ inputs.reviewer && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+          SWIFTPROOF_API_KEY: ${{ secrets.reviewer-api-key }}
+        run: |
+          set -euo pipefail
+          [[ "$BASE_SHA" =~ ^[0-9a-f]{40}$ && "$HEAD_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo 'Full base/head commit SHAs are required.' >&2; exit 3; }
+          output="$RUNNER_TEMP/swiftproof-report"
+          set +e
+          swiftproof review --base "$BASE_SHA" --head "$HEAD_SHA" --ci \
+            --reviewer="$USE_REVIEWER" --out "$output"
+          code=$?
+          set -e
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+          printf 'SwiftProof exit code: %s\n\n' "$code" >> "$GITHUB_STEP_SUMMARY"
+          if [[ -f "$output/CONFIDENCE_REPORT.md" ]]; then
+            cat "$output/CONFIDENCE_REPORT.md" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          if [[ "$code" == 2 ]]; then
+            echo '::warning::SwiftProof requests human review. Inspect the report before approving this PR.'
+          fi
+      - name: Preserve report and reproducing tests
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: swiftproof-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/swiftproof-report/
+          if-no-files-found: warn
+          retention-days: 30
+      - name: Apply blocking policy
+        if: always() && inputs.enforce
+        env:
+          CODE: ${{ steps.review.outputs.code }}
+        run: |
+          case "$CODE" in
+            0|2) exit 0 ;;
+            *) echo 'SwiftProof failed or found a reproduced blocker.' >&2; exit 1 ;;
+          esac

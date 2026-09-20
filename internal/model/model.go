@@ -87,6 +87,38 @@ type ReviewTarget struct {
 	Reasons   []string `json:"reasons"`
 	SignalIDs []string `json:"signal_ids"`
 }
+
+// CoverageFile records how the added lines of one changed file resolved
+// against a recorded coverage profile.
+type CoverageFile struct {
+	Path             string `json:"path"`
+	Status           string `json:"status"`
+	AddedLines       int    `json:"added_lines"`
+	ExecutedLines    int    `json:"executed_lines"`
+	NotExecutedLines int    `json:"not_executed_lines"`
+	NoBlockLines     int    `json:"no_block_lines"`
+	NotMeasuredLines int    `json:"not_measured_lines"`
+}
+
+// Coverage records which added lines a recorded run executed. Executed means a
+// line ran at least once; it is never a claim that behavior is asserted,
+// correct or safe. Removed lines have no candidate-side coordinate and are
+// reported beside the four states rather than inside them.
+type Coverage struct {
+	Status           string         `json:"status"`
+	Reason           string         `json:"reason,omitempty"`
+	CheckID          string         `json:"check_id,omitempty"`
+	ProfileSHA256    string         `json:"profile_sha256,omitempty"`
+	Command          []string       `json:"command,omitempty"`
+	AddedLines       int            `json:"added_lines"`
+	ExecutedLines    int            `json:"executed_lines"`
+	NotExecutedLines int            `json:"not_executed_lines"`
+	NoBlockLines     int            `json:"no_block_lines"`
+	NotMeasuredLines int            `json:"not_measured_lines"`
+	RemovedLines     int            `json:"removed_lines"`
+	Files            []CoverageFile `json:"files"`
+	Note             string         `json:"note"`
+}
 type Artifact struct {
 	Path   string `json:"path"`
 	Kind   string `json:"kind"`
@@ -118,6 +150,7 @@ type Report struct {
 	Unverified       []string       `json:"unverified"`
 	ReviewTargets    []ReviewTarget `json:"review_targets"`
 	ReviewSurface    ReviewSurface  `json:"review_surface"`
+	Coverage         Coverage       `json:"coverage"`
 	Artifacts        []Artifact     `json:"artifacts"`
 	Audit            []AuditEvent   `json:"audit"`
 	ExitCode         int            `json:"exit_code"`

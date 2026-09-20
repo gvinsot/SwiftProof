@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/gvinsot/SwiftProof/internal/config"
+	"github.com/gvinsot/SwiftProof/internal/coverage"
 	"github.com/gvinsot/SwiftProof/internal/fsutil"
 	"github.com/gvinsot/SwiftProof/internal/gitrepo"
 	"github.com/gvinsot/SwiftProof/internal/harness"
@@ -29,7 +30,7 @@ const usage = `SwiftProof — evidence for focused review of AI-assisted changes
 Usage:
   swiftproof init [--repo PATH] [--language go|typescript|python]
   swiftproof lint [--base main] [--head HEAD] [--ci]
-  swiftproof review [--base main] [--reviewer] [--ci]
+  swiftproof review [--base main] [--reviewer=false] [--ci]
   swiftproof review [flags] BASE..HEAD
   swiftproof report [--input .swiftproof/confidence-report.json] [--out DIR]
   swiftproof version
@@ -37,7 +38,9 @@ Usage:
 Analysis compares the merge base by default; BASE..HEAD compares exact commits.
 Only committed files are reviewed. Output defaults to .swiftproof/.
 Review runs configured checks in Docker. Lint never executes repository code.
-The optional reviewer sends bounded, redacted source context to its configured API.
+Review automatically uses the LLM when reviewer.model is configured in trusted policy.
+The reviewer sends bounded, redacted source context to its configured API.
+Use --reviewer=false to disable it. Lint never calls a provider.
 Use 'swiftproof <command> --help' for options.
 `
 
@@ -113,12 +116,12 @@ func analyze(ctx context.Context, mode string, args []string, out, errOut io.Wri
 	format := f.String("format", "markdown,json", "comma-separated output formats: markdown,json")
 	ci := f.Bool("ci", false, "return 2 when human review is required")
 	checks := f.Bool("checks", mode == "review", "run configured checks in the Docker sandbox")
-	useReviewer := f.Bool("reviewer", false, "enable remote LLM investigation; sends redacted source context")
+	useReviewer := f.Bool("reviewer", false, "use LLM investigation (default: enabled for review when reviewer.model is configured); --reviewer=false disables provider calls")
 	maxIterations := f.Int("max-iterations", 0, "override LLM iteration budget (1..100)")
 	intent := f.String("intent", "", "PR intent or acceptance criteria")
 	intentFile := f.String("intent-file", "", "UTF-8 file containing PR intent")
 	allowNetwork := f.Bool("allow-network", false, "permit sandbox network only if trusted policy also enables it")
-	noNetwork := f.Bool("no-network", false, "force sandbox networking off (does not disable the opt-in reviewer API)")
+	noNetwork := f.Bool("no-network", false, "force sandbox networking off (use --reviewer=false to also disable the reviewer API)")
 	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
 		args = append(append([]string{}, args[1:]...), args[0])
 	}
@@ -177,6 +180,20 @@ func analyze(ctx context.Context, mode string, args []string, out, errOut io.Wri
 	if err := cfg.Validate(); err != nil {
 		return fail(errOut, 3, "%v", err)
 	}
+	// Only trusted baseline policy (or explicit --config) can enable provider
+	// traffic. A supplied boolean flag, including false, overrides auto-selection.
+	reviewerExplicit := false
+	f.Visit(func(option *flag.Flag) {
+		if option.Name == "reviewer" {
+			reviewerExplicit = true
+		}
+	})
+	if !reviewerExplicit {
+		*useReviewer = mode == "review" && cfg.Reviewer.Model != ""
+	}
+	if mode == "lint" && (*checks || *useReviewer) {
+		return fail(errOut, 3, "lint does not execute checks or a reviewer; use review")
+	}
 	if *useReviewer && cfg.Reviewer.Model == "" {
 		return fail(errOut, 3, "reviewer.model must be configured before using --reviewer")
 	}
@@ -185,9 +202,6 @@ func analyze(ctx context.Context, mode string, args []string, out, errOut io.Wri
 		if err := reviewer.Validate(reviewerOptions); err != nil {
 			return fail(errOut, 3, "%v", err)
 		}
-	}
-	if mode == "lint" && (*checks || *useReviewer) {
-		return fail(errOut, 3, "lint does not execute checks or a reviewer; use review")
 	}
 	output := *outDir
 	if !filepath.IsAbs(output) {
@@ -204,7 +218,7 @@ func analyze(ctx context.Context, mode string, args []string, out, errOut io.Wri
 	if err != nil {
 		return fail(errOut, 4, "linter: %v", err)
 	}
-	r := model.Report{Version: 1, ToolVersion: version, GeneratedAt: time.Now().UTC(), Intent: *intent, Change: change, Signals: signals}
+	r := model.Report{Version: 1, ToolVersion: version, GeneratedAt: time.Now().UTC(), Intent: *intent, Change: change, Signals: signals, Coverage: coverage.NotConfigured()}
 	operationalFailure := false
 	if mode == "review" && len(change.Files) > 0 && (*checks || *useReviewer) {
 		temp, err := os.MkdirTemp("", "swiftproof-")
@@ -242,6 +256,27 @@ func analyze(ctx context.Context, mode string, args []string, out, errOut io.Wri
 					operationalFailure = true
 				}
 			}
+			// Coverage runs last and in addition to the configured test command,
+			// so the shared runtime budget starves the measurement rather than
+			// the checks a repository already relies on.
+			if _, configured := cfg.Commands[coverage.CommandKey]; configured {
+				fmt.Fprintf(errOut, "Running %s in isolated Docker sandbox...\n", coverage.CommandKey)
+				check, profile, sha, reason := h.RunCoverage(ctx)
+				if check.Status == "ERROR" {
+					operationalFailure = true
+				}
+				result := coverage.NotMeasured(reason)
+				if reason == "" {
+					result = measure(profile, candidateDir, check, sha, change)
+				}
+				r.Coverage = result.Report()
+				// Coverage may add signals and add sentences; it never deletes a
+				// signal, lowers a severity or supports a dismissal.
+				r.Signals = linter.Merge(coverage.Requalify(r.Signals, result), result.Signals())
+				if result.Status() != coverage.StatusMeasured {
+					r.Unverified = append(r.Unverified, "Changed-line execution was not measured: "+r.Coverage.Reason)
+				}
+			}
 		}
 		r.Checks, r.Evidence, r.Audit = h.Checks(), h.Evidence(), h.Audit()
 		auditBefore := len(r.Audit)
@@ -275,8 +310,29 @@ func analyze(ctx context.Context, mode string, args []string, out, errOut io.Wri
 	if err := report.Write(output, &r, formats); err != nil {
 		return fail(errOut, 4, "write report: %v", err)
 	}
-	fmt.Fprintf(out, "%d files, +%d/-%d lines; %d risk signals; %d reproduced issues.\nFocused review: %d / %d changed lines (a prioritization aid, not a correctness guarantee).\nReports: %s\n", len(change.Files), change.Additions, change.Deletions, len(r.Signals), len(r.ReproducedIssues), r.ReviewSurface.FocusedLines, r.ReviewSurface.ChangedLines, output)
+	fmt.Fprintf(out, "%d files, +%d/-%d lines; %d risk signals; %d reproduced issues.\nFocused review: %d / %d changed lines (a prioritization aid, not a correctness guarantee).\n", len(change.Files), change.Additions, change.Deletions, len(r.Signals), len(r.ReproducedIssues), r.ReviewSurface.FocusedLines, r.ReviewSurface.ChangedLines)
+	if r.Coverage.Status == coverage.StatusMeasured {
+		fmt.Fprintf(out, "Changed-line execution: %d executed, %d not executed, %d outside any instrumented block, %d not measured, of %d added Go lines.\n", r.Coverage.ExecutedLines, r.Coverage.NotExecutedLines, r.Coverage.NoBlockLines, r.Coverage.NotMeasuredLines, r.Coverage.AddedLines)
+	} else {
+		fmt.Fprintln(out, "Changed-line execution: not measured.")
+	}
+	fmt.Fprintf(out, "Reports: %s\n", output)
 	return r.ExitCode
+}
+
+// measure resolves the recorded profile against the diff. Every failure short of
+// a complete, mapped measurement returns "not measured": there is no path from
+// missing data to a not-executed claim.
+func measure(profile []byte, candidateDir string, check model.Check, sha string, change model.Change) coverage.Result {
+	module, err := coverage.ModulePath(candidateDir)
+	if err != nil {
+		return coverage.NotMeasured(err.Error())
+	}
+	parsed, err := coverage.ParseGoProfile(profile)
+	if err != nil {
+		return coverage.NotMeasured(err.Error())
+	}
+	return coverage.Analyze(parsed, coverage.Run{CheckID: check.ID, Status: check.Status, Command: check.Command, SHA256: sha, Module: module}, change)
 }
 
 func loadPolicy(ctx context.Context, repo *gitrepo.Repository, base, explicit string) (config.Config, error) {

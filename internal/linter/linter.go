@@ -103,7 +103,19 @@ func Analyze(ctx context.Context, repo *gitrepo.Repository, change model.Change,
 	for _, signals := range results {
 		out = append(out, signals...)
 	}
-	sort.Slice(out, func(i, j int) bool {
+	return finish(out), nil
+}
+
+// Merge combines signals produced elsewhere, such as from a recorded coverage
+// run, with the deterministic signals of this package. Ordering and the
+// content-derived ID recipe stay in one place, so an unchanged signal keeps its
+// identifier no matter what it is merged with.
+func Merge(existing, extra []model.Signal) []model.Signal {
+	return finish(append(append([]model.Signal{}, existing...), extra...))
+}
+
+func finish(out []model.Signal) []model.Signal {
+	sort.SliceStable(out, func(i, j int) bool {
 		a, b := out[i], out[j]
 		if a.Path != b.Path {
 			return a.Path < b.Path
@@ -117,14 +129,17 @@ func Analyze(ctx context.Context, repo *gitrepo.Repository, change model.Change,
 		if a.Kind != b.Kind {
 			return a.Kind < b.Kind
 		}
-		return a.Symbol < b.Symbol
+		if a.Symbol != b.Symbol {
+			return a.Symbol < b.Symbol
+		}
+		return a.Evidence < b.Evidence
 	})
 	for i := range out {
 		s := &out[i]
 		digest := sha256.Sum256([]byte(fmt.Sprintf("%s\x00%s\x00%d\x00%s\x00%s\x00%s", s.Kind, s.Path, s.Line, s.Side, s.Symbol, s.Evidence)))
 		s.ID = fmt.Sprintf("sig-%x", digest[:8])
 	}
-	return out, nil
+	return out
 }
 
 func analyzeFile(ctx context.Context, repo *gitrepo.Repository, change model.Change, f model.ChangedFile, patterns []*regexp.Regexp, hasTestChange bool) []model.Signal {

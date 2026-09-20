@@ -72,7 +72,8 @@ func TestDockerReviewEndToEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 	var out, errOut bytes.Buffer
-	code := Run(context.Background(), []string{"review", "--repo", dir, "--config", policy, "--checks=false", "--reviewer", "--ci", "--out", "report"}, &out, &errOut, "integration")
+	// A configured model activates the investigator without a --reviewer flag.
+	code := Run(context.Background(), []string{"review", "--repo", dir, "--config", policy, "--checks=false", "--ci", "--out", "report"}, &out, &errOut, "integration")
 	if code != 1 {
 		t.Fatalf("expected reproduced-issue exit 1; got %d\n%s\n%s", code, out.String(), errOut.String())
 	}

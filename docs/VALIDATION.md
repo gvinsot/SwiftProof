@@ -26,4 +26,14 @@ For actual container tests, preload a trusted Go image and set `SWIFTPROOF_TEST_
 go test ./internal/harness ./internal/cli -run Docker -count=1 -v
 ```
 
-Tests without that environment variable intentionally skip real Docker integration. The included CI workflow enables it on Linux. GitHub workflows themselves have been prepared, not run remotely or published as a release by this implementation task.
+Tests without that environment variable intentionally skip real Docker integration. The included CI workflow enables it on Linux.
+
+The published v0.1.0 binaries are used by the new PR and deployment adapters.
+The reusable PR workflow and pilot pass `actionlint`. The companion PulsarCD
+implementation passes 528 targeted tests (API, security, build scripts and
+SwiftProof), including an actual SwiftProof CLI invocation through its temporary
+provider bridge with a simulated local provider. Tests cover changed image
+digests, missing/corrupt evidence, human approval, absent LLM gates and separate
+QA/production baselines. These integration changes have been validated locally;
+their GitHub workflows and deployment gate have not been activated on the live
+cluster by this task.
