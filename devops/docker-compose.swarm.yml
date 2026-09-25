@@ -1,0 +1,46 @@
+version: "3.9"
+
+# Docker Swarm stack for the SwiftProof promotional website, deployed by
+# PulsarCD behind the Traefik v3 edge (WAF, security headers, rate limiting
+# through global@file). Only web/ is deployed: the CLI in app/ is shipped as
+# GitHub release binaries, not as a service.
+
+services:
+  swiftproof-web:
+    image: registry.methodinfo.fr/swiftproof-web:latest
+    build:
+      context: ../web
+      dockerfile: Dockerfile
+    networks:
+      - proxy
+    deploy:
+      mode: replicated
+      replicas: 1
+      placement:
+        constraints:
+          - node.labels.gpu == none
+      update_config:
+        order: start-first
+        parallelism: 1
+      restart_policy:
+        condition: on-failure
+      labels:
+        - "traefik.enable=true"
+        - "traefik.docker.network=proxy"
+        - "traefik.http.services.swiftproof-web.loadbalancer.server.port=80"
+
+        # HTTPS router
+        - "traefik.http.routers.swiftproof-web.rule=Host(`${SWIFTPROOF_WEB_DOMAIN:-swiftproof.net}`)"
+        - "traefik.http.routers.swiftproof-web.entrypoints=websecure"
+        - "traefik.http.routers.swiftproof-web.tls.certresolver=letsencrypt"
+        - "traefik.http.routers.swiftproof-web.middlewares=global@file"
+
+        # HTTP -> HTTPS redirect
+        - "traefik.http.routers.swiftproof-web-http.rule=Host(`${SWIFTPROOF_WEB_DOMAIN:-swiftproof.net}`)"
+        - "traefik.http.routers.swiftproof-web-http.entrypoints=web"
+        - "traefik.http.routers.swiftproof-web-http.middlewares=redirect-to-https@file"
+        - "traefik.http.routers.swiftproof-web-http.service=noop@internal"
+
+networks:
+  proxy:
+    external: true

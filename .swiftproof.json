@@ -2,9 +2,9 @@
   "version": 1,
   "language": "go",
   "commands": {
-    "test": ["go", "test", "./..."],
-    "typecheck": ["go", "vet", "./..."],
-    "build": ["go", "build", "./..."],
+    "test": ["go", "test", "./app/..."],
+    "typecheck": ["go", "vet", "./app/..."],
+    "build": ["go", "build", "./app/..."],
     "generated_test": ["go", "test", "{package}"]
   },
   "sandbox": {
@@ -12,5 +12,5 @@
     "network": false
   },
   "reviewer": {"model": ""},
-  "sensitive_paths": ["internal/config/**", "internal/harness/**", "internal/reviewer/**", ".github/workflows/**", ".swiftproof.json"]
+  "sensitive_paths": ["app/internal/config/**", "app/internal/harness/**", "app/internal/reviewer/**", ".github/workflows/**", ".swiftproof.json", "go.work", "devops/**"]
 }

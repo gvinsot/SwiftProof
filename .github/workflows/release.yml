@@ -47,6 +47,9 @@ jobs:
 
   verify:
     needs: prepare
+    defaults:
+      run:
+        working-directory: app
     strategy:
       fail-fast: false
       matrix:
@@ -58,7 +61,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-go@v5
         with:
-          go-version-file: go.mod
+          go-version-file: app/go.mod
           cache: false
       - run: go test ./...
       - run: go vet ./...
@@ -74,6 +77,9 @@ jobs:
   build:
     needs: [prepare, verify]
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: app
     strategy:
       fail-fast: false
       matrix:
@@ -89,7 +95,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-go@v5
         with:
-          go-version-file: go.mod
+          go-version-file: app/go.mod
           cache: false
       - name: Build and package
         shell: bash
@@ -101,8 +107,8 @@ jobs:
         with:
           name: swiftproof-${{ matrix.goos }}-${{ matrix.goarch }}
           path: |
-            dist/*.tar.gz
-            dist/*.zip
+            app/dist/*.tar.gz
+            app/dist/*.zip
           if-no-files-found: error
           retention-days: 30
 
@@ -132,7 +138,7 @@ jobs:
         run: |
           set -euo pipefail
           (cd dist && sha256sum --check SHA256SUMS)
-          notes="docs/releases/$VERSION.md"
+          notes="app/docs/releases/$VERSION.md"
           options=(--generate-notes)
           if [[ -f "$notes" ]]; then options=(--notes-file "$notes"); fi
           if [[ "$VERSION" == *-* ]]; then options+=(--prerelease); fi

@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Download — SwiftProof</title>
+  <meta name="description" content="Download SwiftProof for Windows, macOS and Linux, amd64 and arm64. Every release and its notes, with SHA-256 checksums.">
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="styles.css">
+  <script src="site.js" defer></script>
+</head>
+<body>
+  <header class="nav">
+    <div class="wrap nav-inner">
+      <a class="brand" href="./" aria-label="SwiftProof home">
+        <img src="favicon.svg" alt="" width="28" height="28">
+        <span>SwiftProof</span>
+      </a>
+      <nav aria-label="Main">
+        <a href="getting-started.html">Getting started</a>
+        <a href="download.html" aria-current="page">Download</a>
+        <a href="docs.html">Docs</a>
+        <a class="btn btn-small" href="https://github.com/gvinsot/SwiftProof">GitHub</a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <section class="page-head">
+      <div class="wrap">
+        <p class="eyebrow">Download</p>
+        <h1>Get SwiftProof</h1>
+        <p class="lead">One static executable for Windows, macOS and Linux, on amd64 and arm64. Git is required at runtime; Docker only to execute repository checks. Go is not needed to run it.</p>
+      </div>
+    </section>
+
+    <section class="section" style="padding-top:48px">
+      <div class="wrap">
+        <div class="dl-hero" id="dl-hero">
+          <div>
+            <h2 id="dl-version">SwiftProof <span data-version>v0.3.0</span></h2>
+            <p class="dl-meta" id="dl-meta">Loading release information…</p>
+            <a class="btn btn-big" id="dl-main" href="https://github.com/gvinsot/SwiftProof/releases/latest">Download the latest release</a>
+            <p class="dl-sub" id="dl-file"></p>
+            <p class="dl-sub" id="dl-detect"></p>
+          </div>
+          <div>
+            <p class="dl-meta" style="margin-bottom:10px">All platforms for this release</p>
+            <div class="platforms" id="dl-platforms">
+              <a href="https://github.com/gvinsot/SwiftProof/releases/latest"><span>All platforms on GitHub</span><small>.zip · .tar.gz</small></a>
+            </div>
+          </div>
+        </div>
+        <p class="note">Next: <a href="getting-started.html">install it and review your last commit</a>. Each archive contains the executable, <code>LICENSE</code>, <code>NOTICE</code> and <code>README.md</code> in a folder named after the version and platform.</p>
+      </div>
+    </section>
+
+    <section class="section alt" id="history">
+      <div class="wrap">
+        <h2>Release history</h2>
+        <p class="status" id="releases-status">Loading releases from GitHub…</p>
+        <div class="releases" id="releases">
+          <noscript><p>JavaScript is disabled. Every release, with its notes and archives, is listed on <a href="https://github.com/gvinsot/SwiftProof/releases">GitHub Releases</a>.</p></noscript>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" id="verify">
+      <div class="wrap prose">
+        <h2>Verify a download</h2>
+        <p>Every release publishes a <code>SHA256SUMS</code> file. Download it next to the archive, then check the archive's digest:</p>
+        <div class="code">
+<pre><code><span class="c"># Linux</span>
+grep swiftproof-<span data-version>v0.3.0</span>-linux-amd64.tar.gz SHA256SUMS | sha256sum --check
+<span class="c"># macOS</span>
+grep swiftproof-<span data-version>v0.3.0</span>-darwin-arm64.tar.gz SHA256SUMS | shasum -a 256 --check
+<span class="c"># Windows (PowerShell): compare with the matching line of SHA256SUMS</span>
+Get-FileHash .\swiftproof-<span data-version>v0.3.0</span>-windows-amd64.zip -Algorithm SHA256</code></pre>
+        </div>
+        <p>Checksums detect corrupted or mismatched files. The archives are not signed or notarized, which is why macOS quarantines a copy downloaded with a browser: remove the flag with <code>xattr -d com.apple.quarantine swiftproof</code>.</p>
+
+        <h2 style="margin-top:48px">Build from source</h2>
+        <p>With Go 1.23 or newer and Git, from the <code>app</code> directory of a checkout:</p>
+        <div class="code">
+<pre><code>git clone https://github.com/gvinsot/SwiftProof.git
+cd SwiftProof/app
+go build -o swiftproof ./cmd/swiftproof
+<span class="c"># or build every platform archive with checksums into dist/</span>
+go run ./tools/build -version dev -targets windows/amd64,linux/amd64,darwin/arm64</code></pre>
+        </div>
+        <p>Release process and CI artifacts are described in <a href="https://github.com/gvinsot/SwiftProof/blob/main/app/docs/RELEASE.md">RELEASE.md</a>.</p>
+      </div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <div class="wrap footer-inner">
+      <span>© SwiftProof contributors · AGPL-3.0 License</span>
+      <span><a href="getting-started.html">Getting started</a> · <a href="download.html">Download</a> · <a href="docs.html">Docs</a> · <a href="https://github.com/gvinsot/SwiftProof">GitHub</a></span>
+    </div>
+  </footer>
+</body>
+</html>
