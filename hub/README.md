@@ -17,7 +17,7 @@ its GitHub Enterprise or GitLab instance.
 | **Monitor** | Repositories that have a policy can be watched: the hub installs a push webhook with a per-repository secret and a random, non-enumerable routing URL. |
 | **Report** | Each new commit is analyzed and its report opens in the dashboard on its own, over a live event stream. |
 | **Filter** | A severity slider (low → medium → high → critical) filters the alert list live; clicking an alert unfolds every modification it concerns, with the flagged lines highlighted in the diff. |
-| **Trace** | Commit statuses on the forge, an SVG badge for a README, the per-commit history, and the untouched JSON report for download. |
+| **Trace** | Commit statuses on the forge, an SVG badge for a README, the per-commit history, and the stored JSON report for download. |
 
 A report states what was observed and what was reproduced. The hub never
 approves a change and never turns a zero exit code into a claim of correctness.
