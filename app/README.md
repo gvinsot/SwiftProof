@@ -104,7 +104,7 @@ swiftproof review --help
 
 ## Configuration and trust
 
-`swiftproof init` generates `.swiftproof.json`; see [the Go example](examples/swiftproof.go.json). Default policy comes from the **resolved baseline commit**, never implicitly from the candidate checkout. `--config PATH` explicitly selects a local file you trust.
+`swiftproof init` generates `.swiftproof.json`; see [the Go example](examples/swiftproof.go.json). Policy comes from the **tip of the base branch** (`--base`, `main` by default), never implicitly from the candidate checkout. The diff still starts at the merge base, so a branch forked before the policy landed still gets it. The report records the policy commit, and SwiftProof warns when no policy exists there and built-in defaults apply. `--config PATH` explicitly selects a local file you trust.
 
 Commands are argv arrays, not shell strings. Configure only checks your project provides. `generated_test` accepts `{file}` and `{package}`; Go's default uses the test's package so it can exercise unexported code. Verified Go experiments require one standalone target placeholder; use `-tags=integration` for valued flags. Multi-package commands, execution wrappers and overlays cannot produce verified Go evidence. Avoid scripts that silently skip generated tests.
 
@@ -217,4 +217,4 @@ go test ./internal/linter -bench . -benchmem
 
 Tests use real temporary Git repositories, CLI/report integration, simulated providers, evidence validation and sandbox-policy checks. For real Docker integration, preload an appropriate Go image and set `SWIFTPROOF_TEST_DOCKER_IMAGE` to its name before running the harness tests.
 
-See [CI integration](docs/CI.md), [validation results](docs/VALIDATION.md), [performance measurements](docs/PERFORMANCE.md), the [report schema](schema/confidence-report.schema.json) and the [V0.2 specification](../specs/swiftproof-v0.2-spec.md). Contributions should include reproducible counterexamples for new rules. MIT licensed.
+See [CI integration](docs/CI.md), [validation results](docs/VALIDATION.md), [performance measurements](docs/PERFORMANCE.md), the [report schema](schema/confidence-report.schema.json) and the [V0.2 specification](../specs/swiftproof-v0.2-spec.md). Contributions should include reproducible counterexamples for new rules. Licensed under the AGPL-3.0 with an attribution term, see [LICENSE](../LICENSE) and [NOTICE](../NOTICE).

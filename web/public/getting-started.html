@@ -1,0 +1,201 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Getting started — SwiftProof</title>
+  <meta name="description" content="Install SwiftProof and review your last commit in two minutes, without configuration, Docker or an API key.">
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="styles.css">
+  <script src="site.js" defer></script>
+</head>
+<body>
+  <header class="nav">
+    <div class="wrap nav-inner">
+      <a class="brand" href="./" aria-label="SwiftProof home">
+        <img src="favicon.svg" alt="" width="28" height="28">
+        <span>SwiftProof</span>
+      </a>
+      <nav aria-label="Main">
+        <a href="getting-started.html" aria-current="page">Getting started</a>
+        <a href="download.html">Download</a>
+        <a href="docs.html">Docs</a>
+        <a class="btn btn-small" href="https://github.com/gvinsot/SwiftProof">GitHub</a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <section class="page-head">
+      <div class="wrap">
+        <p class="eyebrow">Getting started</p>
+        <h1>Review your last commit in two minutes</h1>
+        <p class="lead">All you need is a Git repository with at least two commits. The first run needs no configuration, no Docker and no API key, and it never executes your code.</p>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="wrap prose">
+        <ol class="walk">
+          <li>
+            <div>
+              <h2>Install the binary</h2>
+              <p>SwiftProof is a single executable. Git must be installed; nothing else is required for this guide. Copy the commands for your system, or <a href="download.html" data-download-href>download the archive</a> and put <code>swiftproof</code> on your <code>PATH</code> yourself.</p>
+              <div class="tabs" data-tabs>
+                <div class="tablist" role="tablist" aria-label="Operating system">
+                  <button type="button" role="tab" id="tab-unix" aria-controls="panel-unix" data-os="linux darwin">Linux / macOS</button>
+                  <button type="button" role="tab" id="tab-win" aria-controls="panel-win" data-os="windows">Windows (PowerShell)</button>
+                </div>
+                <div class="tabpanel" role="tabpanel" id="panel-unix" aria-labelledby="tab-unix">
+                  <div class="code">
+<pre><code>VERSION=<span data-version>v0.3.0</span>
+OS=$(uname -s | tr '[:upper:]' '[:lower:]')                 <span class="c"># linux or darwin</span>
+ARCH=$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')  <span class="c"># amd64 or arm64</span>
+NAME=swiftproof-$VERSION-$OS-$ARCH
+curl -fsSLO https://github.com/gvinsot/SwiftProof/releases/download/$VERSION/$NAME.tar.gz
+tar -xzf $NAME.tar.gz
+sudo install $NAME/swiftproof /usr/local/bin/
+swiftproof version</code></pre>
+                  </div>
+                  <p>No <code>sudo</code>? Install to <code>~/.local/bin</code> instead, provided it is on your <code>PATH</code>. On macOS, an archive downloaded with a browser is quarantined because it is not notarized; run <code>xattr -d com.apple.quarantine swiftproof</code> once. Downloads through <code>curl</code> are not affected.</p>
+                </div>
+                <div class="tabpanel" role="tabpanel" id="panel-win" aria-labelledby="tab-win">
+                  <div class="code">
+<pre><code>$v = "<span data-version>v0.3.0</span>"
+$arch = if ($env:PROCESSOR_ARCHITECTURE -eq "ARM64") { "arm64" } else { "amd64" }
+$name = "swiftproof-$v-windows-$arch"
+Invoke-WebRequest "https://github.com/gvinsot/SwiftProof/releases/download/$v/$name.zip" -OutFile "$name.zip"
+Expand-Archive "$name.zip" -DestinationPath . -Force
+$dir = "$env:LOCALAPPDATA\Programs\swiftproof"
+New-Item -ItemType Directory -Force $dir | Out-Null
+Copy-Item "$name\swiftproof.exe" $dir -Force
+<span class="c"># add it to your user PATH, now and for new terminals</span>
+[Environment]::SetEnvironmentVariable("Path", [Environment]::GetEnvironmentVariable("Path", "User") + ";$dir", "User")
+$env:Path += ";$dir"
+swiftproof version</code></pre>
+                  </div>
+                </div>
+              </div>
+              <p>The last command prints the installed version, for example <code>swiftproof <span data-version>v0.3.0</span></code>. To check the archive against the published checksums, see <a href="download.html#verify">Verify a download</a>.</p>
+            </div>
+          </li>
+
+          <li>
+            <div>
+              <h2>Compare your last commit with the previous one</h2>
+              <p>Go to any Git repository and ask SwiftProof what changed between <code>HEAD~1</code> and <code>HEAD</code>:</p>
+              <div class="code">
+<pre><code><span class="p">$ </span>cd path/to/your/repository
+<span class="p">$ </span>swiftproof lint HEAD~1..HEAD
+<span class="o">5 files, +120/-5 lines; 21 risk signals; 0 reproduced issues.
+Focused review: 19 / 125 changed lines (a prioritization aid, not a correctness guarantee).
+Changed-line execution: not measured.
+Reports: /home/you/shop/.swiftproof</span></code></pre>
+              </div>
+              <p><code>lint</code> is the static half of SwiftProof. It compares the two commits, collects risk signals and writes a report. It never executes repository code, never calls an AI provider and needs no <code>.swiftproof.json</code>: without one, the built-in defaults for the detected language apply.</p>
+              <div class="callout"><strong>Only committed files are analyzed.</strong> Uncommitted edits and untracked files are ignored, so commit your work first, for example on a scratch branch. To keep reports out of <code>git status</code> without touching <code>.gitignore</code>, run <code>echo .swiftproof/ &gt;&gt; .git/info/exclude</code>.</div>
+            </div>
+          </li>
+
+          <li>
+            <div>
+              <h2>Read the report</h2>
+              <p>Open <code>.swiftproof/CONFIDENCE_REPORT.md</code> in your editor. Start with <strong>Suggested Human Review</strong>, a list of file and line ranges ranked by severity, each with the reason it was flagged:</p>
+              <div class="code">
+<pre><code><span class="o">## Suggested Human Review
+
+- **high** auth/auth.go:7–7 (new): Authentication or authorization function body changed
+- **high** payment/refund.go:21–21 (old): Configured sensitive path changed; No nearby test file changed; Possible input validation removed
+- **medium** catalog/format.go:9–9 (new): Exported Go declaration added
+…</span></code></pre>
+              </div>
+              <p><strong>(new)</strong> points to a line in the candidate commit and <strong>(old)</strong> to a removed line in the base. <strong>Review Surface</strong> tells you how many changed lines those ranges cover. The same data, with commit IDs and signal evidence, is in <code>confidence-report.json</code> for scripts and CI.</p>
+              <p>Signals are reasons to look, not confirmed bugs. The <a href="docs.html#signals">signal reference</a> explains each one.</p>
+            </div>
+          </li>
+
+          <li>
+            <div>
+              <h2>Choose what to compare</h2>
+              <p>Any two revisions work. A few common choices:</p>
+              <div class="table-wrap">
+                <table>
+                  <thead><tr><th>Command</th><th>Compares</th></tr></thead>
+                  <tbody>
+                    <tr><td><code>swiftproof lint HEAD~5..HEAD</code></td><td class="desc">Your last five commits taken together.</td></tr>
+                    <tr><td><code>swiftproof lint --base main</code></td><td class="desc">Your current branch against <code>main</code>, from their merge base, like a pull request. Use <code>--base master</code> if that is your default branch.</td></tr>
+                    <tr><td><code>swiftproof lint --base origin/main --head feature</code></td><td class="desc">Another branch against the remote default branch, without checking it out.</td></tr>
+                    <tr><td><code>swiftproof lint main..feature</code></td><td class="desc">The two exact commits, with no merge base (<code>main...feature</code> uses the merge base).</td></tr>
+                    <tr><td><code>swiftproof lint --base main --ci</code></td><td class="desc">Same as above, but exits with code <code>2</code> when human review is required, for scripts and CI.</td></tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </li>
+
+          <li>
+            <div>
+              <h2>Optional: run your checks in a sandbox</h2>
+              <p><code>review</code> does everything <code>lint</code> does, then runs the repository's test, typecheck, build and coverage commands in disposable, network-less Docker containers. It needs Docker with Linux containers and a <strong>preloaded</strong> image containing your toolchain: SwiftProof never pulls images or installs dependencies itself. For a Go project with no third-party dependencies, the default image is enough:</p>
+              <div class="code">
+<pre><code><span class="p">$ </span>docker pull golang:1.26-bookworm
+<span class="p">$ </span>swiftproof review HEAD~1..HEAD --reviewer=false
+<span class="o">Running test in isolated Docker sandbox...
+Running typecheck in isolated Docker sandbox...
+Running build in isolated Docker sandbox...
+Running coverage in isolated Docker sandbox...
+5 files, +120/-5 lines; 21 risk signals; 0 reproduced issues.
+Focused review: 19 / 125 changed lines (a prioritization aid, not a correctness guarantee).
+Changed-line execution: 44 executed, 0 not executed, 23 outside any instrumented block, 0 not measured, of 67 added Go lines.
+Reports: /home/you/shop/.swiftproof</span></code></pre>
+              </div>
+              <p>For Node.js and Python projects, stock images do not contain your dependencies: build an image that does, then point <code>sandbox.image</code> at it in a policy (next step). If Docker or the image is missing, SwiftProof stops with exit code <code>4</code> and never falls back to running code on your machine.</p>
+            </div>
+          </li>
+
+          <li>
+            <div>
+              <h2>Adopt it in your repository</h2>
+              <p>Generate a policy, review its commands and sandbox image, and commit it to your base branch. From then on, every comparison reads the policy from the base branch, never from the change under review.</p>
+              <div class="code">
+<pre><code>swiftproof init                                   <span class="c"># writes .swiftproof.json</span>
+swiftproof review --base main --config .swiftproof.json   <span class="c"># try it before committing</span>
+git add .swiftproof.json &amp;&amp; git commit -m "Add SwiftProof review policy"
+
+<span class="c"># then, on every pull request or before handing work over</span>
+swiftproof review --base main --ci</code></pre>
+              </div>
+              <p>Next steps: every flag, exit code and policy key is in the <a href="docs.html">reference</a>. To let an AI reviewer try to reproduce issues, configure a provider as described in <a href="docs.html#reviewer">AI reviewer</a>. For GitHub Actions, see the <a href="https://github.com/gvinsot/SwiftProof/blob/main/app/docs/CI.md">CI integration guide</a>.</p>
+            </div>
+          </li>
+        </ol>
+      </div>
+    </section>
+
+    <section class="section alt">
+      <div class="wrap prose">
+        <h2>If something goes wrong</h2>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Message</th><th>What to do</th></tr></thead>
+            <tbody>
+              <tr><td><code>base: git rev-parse … Needed a single revision</code></td><td class="desc">A revision does not exist. The repository may have a single commit (so there is no <code>HEAD~1</code>), or its default branch is not <code>main</code>: pass <code>--base master</code> or an explicit range.</td></tr>
+              <tr><td>The report misses your latest edits</td><td class="desc">They are not committed yet. SwiftProof only analyzes commits; commit them, then run it again.</td></tr>
+              <tr><td>Exit code <code>2</code></td><td class="desc">Not an error: with <code>--ci</code>, it means human review is required. See <a href="docs.html#exit-codes">exit codes</a>.</td></tr>
+              <tr><td>Exit code <code>4</code> during <code>review</code></td><td class="desc">Docker is not running or the sandbox image is not present locally. Pull it first, or use <code>lint</code>.</td></tr>
+              <tr><td><code>reviewer.model must be configured…</code></td><td class="desc"><code>--reviewer</code> was requested without a model. Drop it, or configure a provider.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <div class="wrap footer-inner">
+      <span>© SwiftProof contributors · AGPL-3.0 License</span>
+      <span><a href="getting-started.html">Getting started</a> · <a href="download.html">Download</a> · <a href="docs.html">Docs</a> · <a href="https://github.com/gvinsot/SwiftProof">GitHub</a></span>
+    </div>
+  </footer>
+</body>
+</html>

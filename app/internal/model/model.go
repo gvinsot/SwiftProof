@@ -26,13 +26,30 @@ type ChangedFile struct {
 	Hunks     []Hunk `json:"hunks"`
 }
 type Change struct {
-	BaseRef    string        `json:"base_ref"`
-	HeadRef    string        `json:"head_ref"`
-	BaseCommit string        `json:"base_commit"`
-	HeadCommit string        `json:"head_commit"`
-	Files      []ChangedFile `json:"files"`
-	Additions  int           `json:"additions"`
-	Deletions  int           `json:"deletions"`
+	BaseRef    string `json:"base_ref"`
+	HeadRef    string `json:"head_ref"`
+	BaseCommit string `json:"base_commit"`
+	HeadCommit string `json:"head_commit"`
+	// BaseRefCommit is the commit BaseRef resolved to. It differs from
+	// BaseCommit when the comparison starts at the merge base.
+	BaseRefCommit string        `json:"base_ref_commit,omitempty"`
+	Files         []ChangedFile `json:"files"`
+	Additions     int           `json:"additions"`
+	Deletions     int           `json:"deletions"`
+}
+
+// Policy sources recorded in a report.
+const (
+	PolicyBaseRef  = "base_ref"
+	PolicyExplicit = "explicit"
+	PolicyDefault  = "default"
+)
+
+// Policy records where the trusted policy of a run came from.
+type Policy struct {
+	Source string `json:"source"`
+	Commit string `json:"commit,omitempty"`
+	Path   string `json:"path,omitempty"`
 }
 type Signal struct {
 	ID       string `json:"id"`
@@ -142,6 +159,7 @@ type Report struct {
 	GeneratedAt      time.Time      `json:"generated_at"`
 	Intent           string         `json:"intent,omitempty"`
 	Change           Change         `json:"change"`
+	Policy           Policy         `json:"policy"`
 	Signals          []Signal       `json:"linter"`
 	Checks           []Check        `json:"checks"`
 	Hypotheses       []Hypothesis   `json:"hypotheses"`

@@ -36,6 +36,7 @@ Usage:
   swiftproof version
 
 Analysis compares the merge base by default; BASE..HEAD compares exact commits.
+Policy is read from .swiftproof.json at the tip of the base branch (main).
 Only committed files are reviewed. Output defaults to .swiftproof/.
 Review runs configured checks in Docker. Lint never executes repository code.
 Review automatically uses the LLM when reviewer.model is configured in trusted policy.
@@ -53,7 +54,7 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer, version s
 	}
 	switch args[0] {
 	case "version", "--version":
-		fmt.Fprintf(stdout, "swiftproof %s\n", version)
+		fmt.Fprintf(stdout, "swiftproof %s\nAGPL-3.0 with an attribution term, see NOTICE: https://github.com/gvinsot/SwiftProof\n", version)
 		return 0
 	case "init":
 		return initialize(args[1:], stdout, stderr)
@@ -110,10 +111,10 @@ func analyze(ctx context.Context, mode string, args []string, out, errOut io.Wri
 	f := flag.NewFlagSet(mode, flag.ContinueOnError)
 	f.SetOutput(errOut)
 	repoPath := f.String("repo", ".", "repository directory")
-	base := f.String("base", "main", "base Git revision")
+	base := f.String("base", "main", "base branch or revision; its tip supplies the trusted policy")
 	head := f.String("head", "HEAD", "candidate Git revision")
 	exact := f.Bool("exact", false, "compare exact base instead of merge base")
-	policyPath := f.String("config", "", "explicit trusted local configuration (default: policy from base commit)")
+	policyPath := f.String("config", "", "explicit trusted local configuration (default: policy at the tip of --base)")
 	outDir := f.String("out", ".swiftproof", "report directory, relative to repository")
 	format := f.String("format", "markdown,json", "comma-separated output formats: markdown,json")
 	ci := f.Bool("ci", false, "return 2 when human review is required")
@@ -172,9 +173,15 @@ func analyze(ctx context.Context, mode string, args []string, out, errOut io.Wri
 	if err != nil {
 		return fail(errOut, 3, "%v", err)
 	}
-	cfg, err := loadPolicy(ctx, repo, change.BaseCommit, *policyPath)
+	// The diff starts at the merge base, but the policy comes from the tip of
+	// the base ref: the branch the change targets decides its current rules,
+	// and a branch forked before the policy existed still gets it.
+	cfg, policy, err := loadPolicy(ctx, repo, change.BaseRefCommit, *policyPath)
 	if err != nil {
 		return fail(errOut, 3, "%v", err)
+	}
+	if policy.Source == model.PolicyDefault {
+		fmt.Fprintf(errOut, "No %s at %s (%s); using built-in %s defaults.\n", config.Filename, change.BaseRef, shortCommit(policy.Commit), cfg.Language)
 	}
 	if *maxIterations != 0 {
 		cfg.Reviewer.MaxIterations = *maxIterations
@@ -231,7 +238,7 @@ func analyze(ctx context.Context, mode string, args []string, out, errOut io.Wri
 	if err != nil {
 		return fail(errOut, 4, "linter: %v", err)
 	}
-	r := model.Report{Version: 1, ToolVersion: version, GeneratedAt: time.Now().UTC(), Intent: *intent, Change: change, Signals: signals, Coverage: coverage.NotConfigured()}
+	r := model.Report{Version: 1, ToolVersion: version, GeneratedAt: time.Now().UTC(), Intent: *intent, Change: change, Policy: policy, Signals: signals, Coverage: coverage.NotConfigured()}
 	operationalFailure := false
 	if mode == "review" && len(change.Files) > 0 && (*checks || *useReviewer) {
 		temp, err := os.MkdirTemp("", "swiftproof-")
@@ -348,23 +355,36 @@ func measure(profile []byte, candidateDir string, check model.Check, sha string,
 	return coverage.Analyze(parsed, coverage.Run{CheckID: check.ID, Status: check.Status, Command: check.Command, SHA256: sha, Module: module, Workspace: workspace}, change)
 }
 
-func loadPolicy(ctx context.Context, repo *gitrepo.Repository, base, explicit string) (config.Config, error) {
+// loadPolicy reads the trusted policy from commit, the resolved base ref, unless
+// the caller explicitly selects a local file. It never reads the candidate.
+func loadPolicy(ctx context.Context, repo *gitrepo.Repository, commit, explicit string) (config.Config, model.Policy, error) {
 	if explicit != "" {
+		policy := model.Policy{Source: model.PolicyExplicit, Path: explicit}
 		b, err := readLimited(explicit, 1<<20)
 		if err != nil {
-			return config.Config{}, err
+			return config.Config{}, policy, err
 		}
-		return config.Decode(b)
+		cfg, err := config.Decode(b)
+		return cfg, policy, err
 	}
-	b, err := repo.ReadFile(ctx, base, config.Filename)
+	policy := model.Policy{Source: model.PolicyBaseRef, Commit: commit, Path: config.Filename}
+	b, err := repo.ReadFile(ctx, commit, config.Filename)
 	if err == nil {
-		return config.Decode(b)
+		cfg, err := config.Decode(b)
+		return cfg, policy, err
 	}
 	if !errors.Is(err, gitrepo.ErrNotFound) {
-		return config.Config{}, fmt.Errorf("load base policy: %w", err)
+		return config.Config{}, policy, fmt.Errorf("load base policy: %w", err)
 	}
-	language := detect(func(name string) bool { _, err := repo.ReadFile(ctx, base, name); return err == nil })
-	return config.Default(language), nil
+	language := detect(func(name string) bool { _, err := repo.ReadFile(ctx, commit, name); return err == nil })
+	return config.Default(language), model.Policy{Source: model.PolicyDefault, Commit: commit}, nil
+}
+
+func shortCommit(id string) string {
+	if len(id) > 12 {
+		return id[:12]
+	}
+	return id
 }
 
 func detect(exists func(string) bool) string {

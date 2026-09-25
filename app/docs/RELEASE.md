@@ -22,7 +22,7 @@ It cross-compiles with `CGO_ENABLED=0` and produces all three default targets:
 | Linux amd64 | `dist/linux-amd64/swiftproof` | `dist/swiftproof-dev-linux-amd64.tar.gz` |
 | Linux arm64 | `dist/linux-arm64/swiftproof` | `dist/swiftproof-dev-linux-arm64.tar.gz` |
 
-Each archive contains the executable, `LICENSE` and `README.md`. Linux tar
+Each archive contains the executable, `LICENSE`, `NOTICE` and `README.md`. Linux tar
 archives preserve executable permissions, including when built on Windows.
 `dist/SHA256SUMS` lists checksums for archives produced by the current invocation.
 Replace `dev` with your version; `-out` selects another output directory.
@@ -55,7 +55,7 @@ cross-compilation, not a runtime test of every target. The regular CI workflow
 runs native tests on Linux, Windows, and macOS runners.
 
 Download the **swiftproof-release** artifact from the completed run. It contains
-six archives and `SHA256SUMS`. Each archive contains the executable, `LICENSE`,
+six archives and `SHA256SUMS`. Each archive contains the executable, `LICENSE`, `NOTICE`
 and `README.md` inside a directory named after its version and target. Individual
 target artifacts are also available. Artifacts expire after 30 days.
 

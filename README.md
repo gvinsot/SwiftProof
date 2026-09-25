@@ -41,4 +41,4 @@ docker run --rm -p 8080:80 swiftproof-web   # http://localhost:8080
 Deployment goes through PulsarCD with `devops/docker-compose.swarm.yml`; copy
 `devops/.env.example` to `devops/.env` to set the public domain.
 
-MIT licensed, see [LICENSE](LICENSE).
+Licensed under the GNU AGPL-3.0 with an attribution term (section 7(b)), see [LICENSE](LICENSE) and [NOTICE](NOTICE). Releases up to v0.3.0 remain available under the MIT license.

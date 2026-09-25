@@ -10,18 +10,19 @@
   <meta property="og:type" content="website">
   <link rel="icon" href="favicon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="styles.css">
+  <script src="site.js" defer></script>
 </head>
 <body>
   <header class="nav">
     <div class="wrap nav-inner">
-      <a class="brand" href="#top" aria-label="SwiftProof home">
+      <a class="brand" href="./" aria-label="SwiftProof home">
         <img src="favicon.svg" alt="" width="28" height="28">
         <span>SwiftProof</span>
       </a>
       <nav aria-label="Main">
-        <a href="#how">How it works</a>
-        <a href="#capabilities">Capabilities</a>
-        <a href="#honesty">What it claims</a>
+        <a href="getting-started.html">Getting started</a>
+        <a href="download.html">Download</a>
+        <a href="docs.html">Docs</a>
         <a class="btn btn-small" href="https://github.com/gvinsot/SwiftProof">GitHub</a>
       </nav>
     </div>
@@ -33,34 +34,129 @@
         <div>
           <p class="eyebrow">Open-source CLI · Windows, Linux, macOS</p>
           <h1>Spend review time on the changes that need your judgment.</h1>
-          <p class="lead">SwiftProof reviews AI-assisted pull requests. It maps Git changes to risk signals, runs your checks in disposable containers, tries to reproduce issues with differential tests, and hands you a focused review plan with traceable evidence.</p>
+          <p class="lead">AI assistants write large pull requests fast. SwiftProof tells you which lines to read first: it maps the diff to risk signals, runs your checks in disposable containers, tries to reproduce issues with differential tests, and hands you a focused review plan with traceable evidence.</p>
           <div class="cta">
-            <a class="btn" href="https://github.com/gvinsot/SwiftProof/releases">Download a release</a>
-            <a class="btn btn-ghost" href="https://github.com/gvinsot/SwiftProof#quick-start">Read the quick start</a>
+            <a class="btn" href="download.html" data-download-latest>Download SwiftProof</a>
+            <a class="btn btn-ghost" href="getting-started.html">Try it in 2 minutes</a>
           </div>
-          <p class="note">Works without an AI provider. Never auto-approves a pull request.</p>
+          <p class="note">Latest <a href="download.html"><span data-version>v0.3.0</span></a> · Works without an AI provider · Never auto-approves a pull request.</p>
         </div>
-        <figure class="report" aria-label="Excerpt of a generated confidence report">
-          <figcaption><span class="dot"></span><span class="dot"></span><span class="dot"></span> .swiftproof/CONFIDENCE_REPORT.md</figcaption>
-<pre><code><span class="h">## Automated Checks</span>
-- <b class="ok">PASS</b> test      <i>(exit 0; 6646 ms)</i>
-- <b class="ok">PASS</b> typecheck <i>(exit 0; 5425 ms)</i>
-- <b class="ok">PASS</b> build     <i>(exit 0; 599 ms)</i>
+        <div class="code" aria-label="Running SwiftProof on the last commit of a repository">
+<pre><code><span class="p">$ </span>swiftproof lint HEAD~1..HEAD
+<span class="o">5 files, +120/-5 lines; 21 risk signals; 0 reproduced issues.
+Focused review: <b class="ok">19 / 125 changed lines</b>
+(a prioritization aid, not a correctness guarantee).
+Changed-line execution: not measured.
+Reports: /home/you/shop/.swiftproof</span>
 
-<span class="h">## Suggested Human Review</span>
-- <b class="hi">high</b> auth.go:4 — Authentication or
-  authorization function body changed
-- <b class="lo">low</b>  auth.go:4 — No nearby test file changed
-
-<span class="h">## Review Surface</span>
-Focused review: <b>2 / 2 changed lines</b></code></pre>
-        </figure>
+<span class="c"># Read the flagged lines first</span>
+<span class="p">$ </span>cat .swiftproof/CONFIDENCE_REPORT.md</code></pre>
+        </div>
       </div>
     </section>
 
     <section class="band">
       <div class="wrap">
-        <p class="pull">All three checks passed — and SwiftProof still pointed the reviewer at a changed authorization function. <span>Green tests are not the end of the review. They tell you where to look next.</span></p>
+        <p class="pull">Tests, vet, build and coverage all passed on this change. It also dropped the refund amount validation and let the support role issue refunds. <span>SwiftProof put both at the top of the review plan, among 19 flagged lines out of 125.</span></p>
+      </div>
+    </section>
+
+    <section id="why" class="section">
+      <div class="wrap">
+        <span class="kicker">Why it saves time</span>
+        <h2>Stop reading AI-generated diffs top to bottom.</h2>
+        <p class="lead" style="max-width:760px">The expensive part of reviewing an AI-assisted pull request is not the risky lines. It is finding them among the helpers, tests and docs around them, then working out whether a suspicion is real. SwiftProof does that sorting and gathers the evidence before you open the diff.</p>
+        <div class="compare">
+          <div>
+            <h3>Without SwiftProof <span class="tag">every line, same attention</span></h3>
+            <ol>
+              <li>Check out the branch and run tests, vet and build by hand.</li>
+              <li>Read 125 changed lines in file order, helpers first.</li>
+              <li>Notice, with luck, that a validation call vanished from a refund path.</li>
+              <li>Write a throwaway test to find out whether it matters.</li>
+              <li>Approve without a record of what was actually checked.</li>
+            </ol>
+          </div>
+          <div class="with">
+            <h3>With SwiftProof <span class="tag">risk first, evidence attached</span></h3>
+            <ol>
+              <li>Checks already ran in an isolated container, with logs and hashes.</li>
+              <li>Open the report: 19 flagged lines, ranked by severity, with reasons.</li>
+              <li>Start with <code>payment/refund.go</code>, where the report shows the removed validation.</li>
+              <li>Let the optional reviewer try to reproduce the issue on base and candidate.</li>
+              <li>Keep the Markdown and JSON reports as the review record.</li>
+            </ol>
+          </div>
+        </div>
+        <div class="gains">
+          <article>
+            <h3>Less to read first</h3>
+            <p>A deduplicated review surface counted in real changed lines, so large generated changes shrink to the parts that touch authentication, payments, validation, dependencies or public APIs.</p>
+          </article>
+          <article>
+            <h3>No local setup per PR</h3>
+            <p>Your test, typecheck, build and coverage commands run in disposable, network-less containers. Nothing of the candidate executes on your machine.</p>
+          </article>
+          <article>
+            <h3>Know when to stop</h3>
+            <p>Unverified areas and incomplete checks are listed explicitly, and <code>--ci</code> turns them into an exit code. You know what was covered and what still needs your judgment.</p>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section id="example" class="section alt">
+      <div class="wrap">
+        <span class="kicker">Example report</span>
+        <h2>What you open instead of the raw diff</h2>
+        <p class="lead" style="max-width:760px">Excerpt of <code>.swiftproof/CONFIDENCE_REPORT.md</code>, produced by <code>swiftproof review HEAD~1..HEAD --reviewer=false --ci</code> (v0.3.0) on a small shop repository. The commit added catalog helpers with tests, reworked refunds and touched authorization. No AI provider was used.</p>
+        <div class="annotated">
+          <figure class="report" aria-label="Generated confidence report">
+            <figcaption><span class="dot"></span><span class="dot"></span><span class="dot"></span> .swiftproof/CONFIDENCE_REPORT.md</figcaption>
+<pre><code><span class="h">## Change Summary</span>
+120 additions / 5 deletions · 5 files changed
+Exit code: 2. No confidence percentage is assigned.
+
+<span class="h">## Automated Checks</span><span class="m">1</span>
+- <b class="ok">PASS</b> test      <i>(check-1; exit 0; 5982 ms)</i>
+- <b class="ok">PASS</b> typecheck <i>(check-2; exit 0; 4866 ms)</i>
+- <b class="ok">PASS</b> build     <i>(check-3; exit 0; 2835 ms)</i>
+- <b class="ok">PASS</b> coverage  <i>(check-4; exit 0; 6416 ms)</i>
+
+<span class="h">## Reproduced Issues</span><span class="m">2</span>
+No issue was reproduced by a passing baseline
+and failing candidate experiment.
+
+<span class="h">## Suggested Human Review</span><span class="m">3</span>
+- <b class="hi">high</b> auth/auth.go:7 (new): Authentication or
+  authorization function body changed
+- <b class="hi">high</b> payment/refund.go:21–22 (new): Payment-sensitive
+  function body changed
+- <b class="hi">high</b> payment/refund.go:25–26 (new): Exported Go
+  declaration added; Payment-sensitive function body changed
+- <b class="hi">high</b> payment/refund.go:21 (old): Configured sensitive
+  path changed; No nearby test file changed;
+  <b>Possible input validation removed</b>
+- <b class="lo">medium</b> catalog/format.go:9 (new): Exported Go
+  declaration added
+<i>  … 11 more medium signals in catalog/</i>
+
+<span class="h">## Review Surface</span><span class="m">4</span>
+Focused review: <b>19 / 125 changed lines</b>.
+
+<span class="h">## Changed-line Execution</span><span class="m">5</span>
+Of 67 added Go lines, 44 were executed at least once,
+0 were not executed, 23 are not inside any
+instrumented block.</code></pre>
+          </figure>
+          <ol class="notes">
+            <li><strong>Checks are done, and they are not the answer.</strong> Every configured command passed in an isolated container. That is exactly why the rest of the report matters.</li>
+            <li><strong>Evidence, not opinions.</strong> A reproduced issue needs a test that passes on the base and fails on the candidate. Without an AI provider nothing is claimed here, and the report says so.</li>
+            <li><strong>Your reading order.</strong> High signals first: an authorization rule and a refund path changed, and a validation call was removed with no nearby test change. That is where the bug is.</li>
+            <li><strong>The size of the job.</strong> 19 of 125 changed lines carry a signal. Read those first, then decide how much of the rest deserves attention.</li>
+            <li><strong>An observation, not a proof.</strong> The new refund code ran during the tests, yet no test asserts the amount check. SwiftProof reports execution but never presents it as proof that the code is tested.</li>
+          </ol>
+        </div>
       </div>
     </section>
 
@@ -91,19 +187,21 @@ Focused review: <b>2 / 2 changed lines</b></code></pre>
     <section class="section alt">
       <div class="wrap two-col">
         <div>
-          <h2>Three commands to a first report</h2>
-          <p>Generate a policy, commit it to your base branch, and review. The policy is always read from the resolved <em>baseline</em> commit, so a pull request cannot loosen its own rules.</p>
-          <p>Need a quick signal without Docker or an API key? <code>swiftproof lint</code> runs the static analysis alone.</p>
+          <h2>From a first try to every pull request</h2>
+          <p>Try it on your last commit with no configuration, no Docker and no API key. When you adopt it, commit a policy to your base branch: it is read from the base, so a pull request cannot loosen its own rules.</p>
+          <p><a href="getting-started.html">Follow the getting started guide →</a></p>
         </div>
-<pre class="terminal"><code><span class="c"># once, in your repository</span>
+        <div class="code">
+<pre><code><span class="c"># try it: compare with the previous commit</span>
+swiftproof lint HEAD~1..HEAD
+
+<span class="c"># adopt it: once, in your repository</span>
 swiftproof init
 git add .swiftproof.json &amp;&amp; git commit -m "Add review policy"
 
 <span class="c"># on every pull request</span>
-swiftproof review --base main --ci
-
-<span class="c"># static analysis only: no Docker, no API</span>
-swiftproof lint --base main</code></pre>
+swiftproof review --base main --ci</code></pre>
+        </div>
       </div>
     </section>
 
@@ -158,10 +256,10 @@ swiftproof lint --base main</code></pre>
     <section class="section final">
       <div class="wrap center">
         <h2>Put your review time where it matters.</h2>
-        <p class="lead">Single static binary. MIT licensed. Git required; Docker only to execute repository code.</p>
+        <p class="lead">Single static binary. AGPL-3.0 licensed. Git required; Docker only to execute repository code.</p>
         <div class="cta center">
-          <a class="btn" href="https://github.com/gvinsot/SwiftProof/releases">Get SwiftProof</a>
-          <a class="btn btn-ghost" href="https://github.com/gvinsot/SwiftProof">View the source</a>
+          <a class="btn" href="download.html" data-download-latest>Get SwiftProof</a>
+          <a class="btn btn-ghost" href="docs.html">Read the reference</a>
         </div>
       </div>
     </section>
@@ -169,8 +267,8 @@ swiftproof lint --base main</code></pre>
 
   <footer class="footer">
     <div class="wrap footer-inner">
-      <span>© SwiftProof contributors · MIT License</span>
-      <a href="https://github.com/gvinsot/SwiftProof">github.com/gvinsot/SwiftProof</a>
+      <span>© SwiftProof contributors · AGPL-3.0 License</span>
+      <span><a href="getting-started.html">Getting started</a> · <a href="download.html">Download</a> · <a href="docs.html">Docs</a> · <a href="https://github.com/gvinsot/SwiftProof">GitHub</a></span>
     </div>
   </footer>
 </body>

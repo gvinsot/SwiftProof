@@ -21,8 +21,11 @@ import (
 	"strings"
 )
 
-// The license covers the whole repository and lives at its root.
-const licensePath = "../LICENSE"
+// The license and its NOTICE cover the whole repository and live at its root.
+const (
+	licensePath = "../LICENSE"
+	noticePath  = "../NOTICE"
+)
 
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
@@ -58,7 +61,7 @@ func run(ctx context.Context) error {
 			seen[target] = true
 		}
 	}
-	for _, path := range []string{"go.mod", "cmd/swiftproof/main.go", "README.md", licensePath} {
+	for _, path := range []string{"go.mod", "cmd/swiftproof/main.go", "README.md", licensePath, noticePath} {
 		if _, err := os.Stat(path); err != nil {
 			return fmt.Errorf("run from the app directory of the SwiftProof repository: %w", err)
 		}
@@ -154,7 +157,7 @@ func build(ctx context.Context, goBinary, out, version, osName, arch string) (st
 		extension = ".zip"
 	}
 	archive := filepath.Join(temp, prefix+extension)
-	files := []entry{{destination, name, 0755}, {licensePath, "LICENSE", 0644}, {"README.md", "README.md", 0644}}
+	files := []entry{{destination, name, 0755}, {licensePath, "LICENSE", 0644}, {noticePath, "NOTICE", 0644}, {"README.md", "README.md", 0644}}
 	if err := pack(archive, prefix, files, osName == "windows"); err != nil {
 		return "", err
 	}

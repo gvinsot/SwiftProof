@@ -124,13 +124,15 @@ func validObjectID(id string) bool {
 	return true
 }
 
-// Analyze resolves both refs first. With mergeBase, BaseCommit is their common ancestor.
+// Analyze resolves both refs first. With mergeBase, BaseCommit is their common
+// ancestor; BaseRefCommit always keeps the commit the base ref resolved to.
 func (r *Repository) Analyze(ctx context.Context, base, head string, mergeBase bool) (model.Change, error) {
 	change := model.Change{BaseRef: base, HeadRef: head, Files: []model.ChangedFile{}}
 	var err error
 	if change.BaseCommit, err = r.resolve(ctx, base); err != nil {
 		return change, fmt.Errorf("base: %w", err)
 	}
+	change.BaseRefCommit = change.BaseCommit
 	if change.HeadCommit, err = r.resolve(ctx, head); err != nil {
 		return change, fmt.Errorf("head: %w", err)
 	}

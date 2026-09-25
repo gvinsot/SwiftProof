@@ -124,6 +124,76 @@ func TestCandidateCannotReplacePolicy(t *testing.T) {
 		t.Fatalf("explicit invalid policy code %d", code)
 	}
 }
+
+// A branch forked before the policy landed on main still gets that policy,
+// while the diff keeps starting at the merge base.
+func TestPolicyComesFromBaseTip(t *testing.T) {
+	dir := fixture(t)
+	git(t, dir, "checkout", "main")
+	write(t, dir, config.Filename, `{"version":999}`)
+	git(t, dir, "add", ".")
+	git(t, dir, "commit", "-m", "policy on main")
+	git(t, dir, "checkout", "candidate")
+	var out, errOut bytes.Buffer
+	if code := Run(context.Background(), []string{"lint", "--repo", dir}, &out, &errOut, "test"); code != 3 {
+		t.Fatalf("policy at the base tip was not loaded: code %d %s", code, errOut.String())
+	}
+
+	git(t, dir, "checkout", "main")
+	valid, err := json.Marshal(config.Default("go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	write(t, dir, config.Filename, string(valid))
+	git(t, dir, "add", ".")
+	git(t, dir, "commit", "-m", "valid policy on main")
+	git(t, dir, "checkout", "candidate")
+	errOut.Reset()
+	if code := Run(context.Background(), []string{"lint", "--repo", dir, "--out", "reports"}, &out, &errOut, "test"); code != 0 {
+		t.Fatalf("code %d: %s", code, errOut.String())
+	}
+	r := readReport(t, filepath.Join(dir, "reports", "confidence-report.json"))
+	tip := strings.TrimSpace(git(t, dir, "rev-parse", "main"))
+	if r.Policy.Source != model.PolicyBaseRef || r.Policy.Commit != tip || r.Change.BaseRefCommit != tip {
+		t.Fatalf("policy provenance %+v, base ref commit %s, want tip %s", r.Policy, r.Change.BaseRefCommit, tip)
+	}
+	if r.Change.BaseCommit == tip || len(r.Change.Files) != 1 || r.Change.Files[0].Path != "auth.go" {
+		t.Fatalf("diff no longer starts at the merge base: %+v", r.Change)
+	}
+	md, err := os.ReadFile(filepath.Join(dir, "reports", "CONFIDENCE_REPORT.md"))
+	if err != nil || !strings.Contains(string(md), "Policy: "+config.Filename+" at main ("+tip+")") {
+		t.Fatalf("markdown omits policy provenance: %v\n%s", err, md)
+	}
+}
+
+func TestMissingBasePolicyIsReported(t *testing.T) {
+	dir := fixture(t)
+	var out, errOut bytes.Buffer
+	if code := Run(context.Background(), []string{"lint", "--repo", dir, "--out", "reports"}, &out, &errOut, "test"); code != 0 {
+		t.Fatalf("code %d: %s", code, errOut.String())
+	}
+	if !strings.Contains(errOut.String(), "No "+config.Filename+" at main") {
+		t.Fatalf("default policy was applied silently: %s", errOut.String())
+	}
+	r := readReport(t, filepath.Join(dir, "reports", "confidence-report.json"))
+	if r.Policy.Source != model.PolicyDefault {
+		t.Fatalf("policy source %q, want %q", r.Policy.Source, model.PolicyDefault)
+	}
+}
+
+func readReport(t *testing.T, path string) model.Report {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var r model.Report
+	if err := json.Unmarshal(b, &r); err != nil {
+		t.Fatal(err)
+	}
+	return r
+}
+
 func TestInitNeverOverwrites(t *testing.T) {
 	dir := t.TempDir()
 	var out, errOut bytes.Buffer
