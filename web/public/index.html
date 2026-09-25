@@ -1,0 +1,177 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SwiftProof — Review AI-assisted pull requests with evidence</title>
+  <meta name="description" content="SwiftProof maps Git changes to risk signals, runs isolated checks and adversarial tests, and produces a focused review plan with traceable evidence. Open source, works without an AI provider.">
+  <meta property="og:title" content="SwiftProof — Spend review time on the changes that need your judgment">
+  <meta property="og:description" content="A Go CLI that turns an AI-assisted pull request into a focused, evidence-backed review plan.">
+  <meta property="og:type" content="website">
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="nav">
+    <div class="wrap nav-inner">
+      <a class="brand" href="#top" aria-label="SwiftProof home">
+        <img src="favicon.svg" alt="" width="28" height="28">
+        <span>SwiftProof</span>
+      </a>
+      <nav aria-label="Main">
+        <a href="#how">How it works</a>
+        <a href="#capabilities">Capabilities</a>
+        <a href="#honesty">What it claims</a>
+        <a class="btn btn-small" href="https://github.com/gvinsot/SwiftProof">GitHub</a>
+      </nav>
+    </div>
+  </header>
+
+  <main id="top">
+    <section class="hero">
+      <div class="wrap hero-grid">
+        <div>
+          <p class="eyebrow">Open-source CLI · Windows, Linux, macOS</p>
+          <h1>Spend review time on the changes that need your judgment.</h1>
+          <p class="lead">SwiftProof reviews AI-assisted pull requests. It maps Git changes to risk signals, runs your checks in disposable containers, tries to reproduce issues with differential tests, and hands you a focused review plan with traceable evidence.</p>
+          <div class="cta">
+            <a class="btn" href="https://github.com/gvinsot/SwiftProof/releases">Download a release</a>
+            <a class="btn btn-ghost" href="https://github.com/gvinsot/SwiftProof#quick-start">Read the quick start</a>
+          </div>
+          <p class="note">Works without an AI provider. Never auto-approves a pull request.</p>
+        </div>
+        <figure class="report" aria-label="Excerpt of a generated confidence report">
+          <figcaption><span class="dot"></span><span class="dot"></span><span class="dot"></span> .swiftproof/CONFIDENCE_REPORT.md</figcaption>
+<pre><code><span class="h">## Automated Checks</span>
+- <b class="ok">PASS</b> test      <i>(exit 0; 6646 ms)</i>
+- <b class="ok">PASS</b> typecheck <i>(exit 0; 5425 ms)</i>
+- <b class="ok">PASS</b> build     <i>(exit 0; 599 ms)</i>
+
+<span class="h">## Suggested Human Review</span>
+- <b class="hi">high</b> auth.go:4 — Authentication or
+  authorization function body changed
+- <b class="lo">low</b>  auth.go:4 — No nearby test file changed
+
+<span class="h">## Review Surface</span>
+Focused review: <b>2 / 2 changed lines</b></code></pre>
+        </figure>
+      </div>
+    </section>
+
+    <section class="band">
+      <div class="wrap">
+        <p class="pull">All three checks passed — and SwiftProof still pointed the reviewer at a changed authorization function. <span>Green tests are not the end of the review. They tell you where to look next.</span></p>
+      </div>
+    </section>
+
+    <section id="how" class="section">
+      <div class="wrap">
+        <h2>How it works</h2>
+        <ol class="steps">
+          <li>
+            <h3>Compare immutable commits</h3>
+            <p>Both refs resolve to commit IDs. Renames, deletions, binaries and merge-base semantics are handled; only committed files are reviewed, so local edits never leak into the result.</p>
+          </li>
+          <li>
+            <h3>Collect risk signals</h3>
+            <p>Go AST comparison, labelled lexical heuristics and sensitive-path rules flag authentication, payments, dependencies, removed validation, unsafe constructs and missing tests.</p>
+          </li>
+          <li>
+            <h3>Execute in a sandbox</h3>
+            <p>Your test, typecheck and build commands run as argv arrays in disposable, non-root, network-less containers with CPU, memory, PID and time limits.</p>
+          </li>
+          <li>
+            <h3>Reproduce, don't assert</h3>
+            <p>An optional reviewer writes temporary tests. A test that passes on the baseline and fails on the candidate supports a reproduced issue; anything else stays <strong>UNVERIFIED</strong>.</p>
+          </li>
+        </ol>
+      </div>
+    </section>
+
+    <section class="section alt">
+      <div class="wrap two-col">
+        <div>
+          <h2>Three commands to a first report</h2>
+          <p>Generate a policy, commit it to your base branch, and review. The policy is always read from the resolved <em>baseline</em> commit, so a pull request cannot loosen its own rules.</p>
+          <p>Need a quick signal without Docker or an API key? <code>swiftproof lint</code> runs the static analysis alone.</p>
+        </div>
+<pre class="terminal"><code><span class="c"># once, in your repository</span>
+swiftproof init
+git add .swiftproof.json &amp;&amp; git commit -m "Add review policy"
+
+<span class="c"># on every pull request</span>
+swiftproof review --base main --ci
+
+<span class="c"># static analysis only: no Docker, no API</span>
+swiftproof lint --base main</code></pre>
+      </div>
+    </section>
+
+    <section id="capabilities" class="section">
+      <div class="wrap">
+        <h2>Capabilities</h2>
+        <div class="cards">
+          <article class="card">
+            <h3>Focused review surface</h3>
+            <p>Deduplicated review ranges with old and new coordinates, counted in actual changed lines, ranked by severity.</p>
+          </article>
+          <article class="card">
+            <h3>Differential evidence</h3>
+            <p>Generated tests run on baseline and candidate in fresh environments. Go execution is verified from structured test events.</p>
+          </article>
+          <article class="card">
+            <h3>Changed-line execution</h3>
+            <p>Optionally measure which added Go lines a recorded run executed — reported as an observation, never as proof of testing.</p>
+          </article>
+          <article class="card">
+            <h3>Bounded AI reviewer</h3>
+            <p>Bring any OpenAI-compatible provider. Tools are bounded: redacted file reads, search and test runs. No shell, no URL fetcher.</p>
+          </article>
+          <article class="card">
+            <h3>CI ready</h3>
+            <p>A reusable GitHub Actions workflow, meaningful exit codes, and JSON reports with commit IDs, evidence and artifact hashes.</p>
+          </article>
+          <article class="card">
+            <h3>Agent friendly</h3>
+            <p>Coding agents run <code>lint</code> and <code>review</code> before handing work over, and report what was reproduced and what remains open.</p>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section id="honesty" class="section alt">
+      <div class="wrap two-col">
+        <div>
+          <h2>What SwiftProof does not claim</h2>
+          <p>A review tool earns trust by being precise about its limits. SwiftProof assigns no confidence percentages and never approves a pull request on its own.</p>
+        </div>
+        <ul class="checks">
+          <li>Signals are reasons to investigate, not confirmed bugs.</li>
+          <li>Passing tests and a small review surface are not correctness guarantees.</li>
+          <li>An executed line is an observation, not proof that it is tested.</li>
+          <li>A model's assertion is never evidence; only a reproduced difference is.</li>
+          <li>Execution never falls back to your host when Docker is missing.</li>
+        </ul>
+      </div>
+    </section>
+
+    <section class="section final">
+      <div class="wrap center">
+        <h2>Put your review time where it matters.</h2>
+        <p class="lead">Single static binary. MIT licensed. Git required; Docker only to execute repository code.</p>
+        <div class="cta center">
+          <a class="btn" href="https://github.com/gvinsot/SwiftProof/releases">Get SwiftProof</a>
+          <a class="btn btn-ghost" href="https://github.com/gvinsot/SwiftProof">View the source</a>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <div class="wrap footer-inner">
+      <span>© SwiftProof contributors · MIT License</span>
+      <a href="https://github.com/gvinsot/SwiftProof">github.com/gvinsot/SwiftProof</a>
+    </div>
+  </footer>
+</body>
+</html>
