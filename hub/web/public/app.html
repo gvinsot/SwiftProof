@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SwiftProof Hub</title>
+  <meta name="robots" content="noindex">
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="app.css">
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="/app.html">
+      <img src="favicon.svg" alt="" width="26" height="26">
+      <span>SwiftProof</span>
+      <small id="mode-label"></small>
+    </a>
+    <span class="spacer"></span>
+    <button class="btn quiet small" id="sync">Refresh repositories</button>
+    <span class="who" id="who"></span>
+    <button class="btn quiet small" id="signout">Sign out</button>
+  </header>
+
+  <main class="layout">
+    <section class="panel" aria-label="Repositories">
+      <div class="panel-head">
+        <h2>Repositories</h2>
+        <span class="spacer"></span>
+        <span class="chip" id="repo-count">0</span>
+      </div>
+      <div class="panel-body">
+        <input class="search" id="repo-search" type="search" placeholder="Filter by name…" autocomplete="off">
+        <div class="row">
+          <label class="note"><input type="checkbox" id="only-monitored"> Monitored only</label>
+          <label class="note"><input type="checkbox" id="only-nopolicy"> Missing policy only</label>
+        </div>
+      </div>
+      <ul class="repo-list" id="repos"></ul>
+      <div class="empty hidden" id="repos-empty">No repository yet. Use “Refresh repositories”.</div>
+    </section>
+
+    <section class="panel" aria-label="Report">
+      <div class="report-head" id="report-head">
+        <div class="report-title">
+          <h2 id="report-repo">Select a repository</h2>
+        </div>
+        <p class="report-sub" id="report-sub">
+          Repositories without a <code>.swiftproof.json</code> policy can get one in a click.
+          Monitored repositories are analyzed on every new commit, and their report opens here automatically.
+        </p>
+      </div>
+
+      <div class="filters hidden" id="filters">
+        <div class="filter-row">
+          <div class="slider">
+            <label for="severity">Minimum severity</label>
+            <input type="range" id="severity" min="0" max="3" step="1" value="0" list="severity-ticks">
+            <output id="severity-value" for="severity">low</output>
+          </div>
+          <select id="history" class="select" aria-label="Analyzed commits"></select>
+        </div>
+        <datalist id="severity-ticks">
+          <option value="0" label="low"></option>
+          <option value="1" label="medium"></option>
+          <option value="2" label="high"></option>
+          <option value="3" label="critical"></option>
+        </datalist>
+        <div class="scale" aria-hidden="true">
+          <span>low</span><span>medium</span><span>high</span><span>critical</span>
+        </div>
+        <div class="filter-row">
+          <div class="kinds" id="kinds" role="group" aria-label="Alert kinds"></div>
+          <span class="spacer"></span>
+          <span class="note" id="alert-count"></span>
+          <a class="btn quiet small" id="download" href="#" download>Download JSON</a>
+        </div>
+      </div>
+
+      <ul class="alerts" id="alerts"></ul>
+      <div class="empty" id="report-empty">Nothing to show yet.</div>
+
+      <div class="panel-body hidden" id="extras"></div>
+    </section>
+  </main>
+
+  <div class="toast" id="toast" aria-live="polite"></div>
+  <div class="modal hidden" id="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+    <div class="modal-card">
+      <header>
+        <h3 id="modal-title">Create .swiftproof.json</h3>
+        <span class="spacer"></span>
+        <button class="btn quiet small" id="modal-close">Close</button>
+      </header>
+      <div class="body" id="modal-body"></div>
+      <footer id="modal-footer"></footer>
+    </div>
+  </div>
+</body>
+</html>

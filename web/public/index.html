@@ -21,6 +21,7 @@
       </a>
       <nav aria-label="Main">
         <a href="getting-started.html">Getting started</a>
+        <a href="#hub">Web app</a>
         <a href="download.html">Download</a>
         <a href="docs.html">Docs</a>
         <a class="btn btn-small" href="https://github.com/gvinsot/SwiftProof">GitHub</a>
@@ -201,6 +202,30 @@ git add .swiftproof.json &amp;&amp; git commit -m "Add review policy"
 
 <span class="c"># on every pull request</span>
 swiftproof review --base main --ci</code></pre>
+        </div>
+      </div>
+    </section>
+
+    <section id="hub" class="section">
+      <div class="wrap two-col">
+        <div>
+          <h2>Or run it for a whole account: SwiftProof&nbsp;Hub</h2>
+          <p>The hub is the companion web application. Sign in with GitHub or GitLab, and every repository still missing a <code>.swiftproof.json</code> gets a policy proposed in one click, previewed before it is committed to the default branch.</p>
+          <p>Repositories that have a policy can be watched: each new commit is analyzed and its report opens on its own. A severity slider filters the alerts from low to critical, and clicking one unfolds every modification it concerns, with the flagged lines highlighted in the diff.</p>
+          <p>One container, no database, no external service — so a company can deploy it internally against its own GitHub Enterprise or GitLab instance. In its default mode it never executes the analyzed code.</p>
+          <p><a href="https://github.com/gvinsot/SwiftProof/blob/main/hub/README.md">Deploy the hub →</a></p>
+        </div>
+        <div class="code" aria-label="Running the SwiftProof Hub container">
+<pre><code><span class="c"># one container, on your own network</span>
+<span class="p">$ </span>docker run -p 8080:8080 \
+    -e SWIFTPROOF_HUB_BASE_URL=https://hub.example.com \
+    -e SWIFTPROOF_HUB_GITHUB_CLIENT_ID=... \
+    -e SWIFTPROOF_HUB_GITHUB_CLIENT_SECRET=... \
+    -v hub-data:/var/lib/swiftproof-hub \
+    gvinsot/swiftproof-hub
+
+<span class="o">Sign in · bootstrap the missing policies · watch pushes
+Reports open by themselves, filtered by severity.</span></code></pre>
         </div>
       </div>
     </section>

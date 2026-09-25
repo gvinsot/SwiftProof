@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SwiftProof Hub — sign in</title>
+  <meta name="robots" content="noindex">
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="app.css">
+  <script src="signin.js" defer></script>
+</head>
+<body>
+  <main class="signin">
+    <section class="panel signin-card">
+      <img src="favicon.svg" alt="" width="44" height="44">
+      <h1>SwiftProof Hub</h1>
+      <p>Connect a code forge to bootstrap the review policy of your repositories and get an evidence-backed report on every new commit.</p>
+
+      <div class="error-box hidden" id="error" role="alert"></div>
+
+      <div class="signin-actions" id="providers">
+        <p class="note" id="loading">Loading the configured forges…</p>
+      </div>
+
+      <p class="legal">
+        The hub stores only what it needs to analyze your repositories, and it never approves a pull request.
+        Reports state what was reproduced — nothing else.
+      </p>
+    </section>
+  </main>
+</body>
+</html>

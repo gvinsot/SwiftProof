@@ -12,5 +12,5 @@
     "network": false
   },
   "reviewer": {"model": ""},
-  "sensitive_paths": ["app/internal/config/**", "app/internal/harness/**", "app/internal/reviewer/**", ".github/workflows/**", ".swiftproof.json", "go.work", "devops/**"]
+  "sensitive_paths": ["app/internal/config/**", "app/internal/harness/**", "app/internal/reviewer/**", "hub/internal/secrets/**", "hub/internal/server/**", "hub/internal/forge/**", "hub/internal/accounts/**", "hub/Dockerfile", "hub/scripts/**", ".github/workflows/**", ".swiftproof.json", "go.work", "devops/**"]
 }

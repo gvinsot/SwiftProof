@@ -1,11 +1,14 @@
 # SwiftProof development workflow
 
-The repository has four areas: `app/` (the Go CLI and its docs), `web/` (the
-promotional website), `devops/` (PulsarCD deployment of the website) and
-`specs/` (product specifications).
+The repository has five areas: `app/` (the Go CLI and its docs), `hub/` (the
+web application that drives the CLI for a whole account), `web/` (the
+promotional website), `devops/` (PulsarCD deployment) and `specs/` (product
+specifications).
 
 Run `go test ./...` and `go vet ./...` from `app/` (or `go test ./app/...` from
-the root, through `go.work`) for relevant Go changes. Tests which need real
+the root, through `go.work`) for relevant Go changes, and `go test ./hub/...`
+for the web application. The hub never re-derives a verdict: it runs the
+trusted binary and renders the report the CLI produced. Tests which need real
 Docker require `SWIFTPROOF_TEST_DOCKER_IMAGE` and a preloaded trusted image.
 
 Before handing over committed code, use an installed trusted SwiftProof binary
