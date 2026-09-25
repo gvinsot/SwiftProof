@@ -13,6 +13,7 @@ import (
 	"github.com/gvinsot/SwiftProof/app/internal/config"
 	"github.com/gvinsot/SwiftProof/app/internal/coverage"
 	"github.com/gvinsot/SwiftProof/app/internal/model"
+	"github.com/gvinsot/SwiftProof/app/internal/redact"
 )
 
 // Runner names recorded on differential evidence. Each names the verifier that
@@ -112,9 +113,12 @@ type jestAssertion struct {
 	FailureMessages []string `json:"failureMessages,omitempty"`
 }
 
-// normalizeJestReport keeps only what verification and a reviewer need, with
-// bounded and redacted messages. Titles are kept verbatim: they are matched
-// against names extracted from the generated source.
+// normalizeJestReport keeps only what verification and a reviewer need. Every
+// string it keeps is redacted (file names, statuses, titles, ancestor titles
+// and messages), and messages are bounded. A title that redaction changes no
+// longer matches the name extracted from the generated source, so such a test
+// can only be inconclusive. The caller rejects a result that is not a Redact
+// fixed point after encoding.
 func normalizeJestReport(raw []byte) (string, error) {
 	if !utf8.Valid(raw) {
 		return "", errors.New("test results are not valid UTF-8")
@@ -128,9 +132,16 @@ func normalizeJestReport(raw []byte) (string, error) {
 	}
 	for i := range report.TestResults {
 		file := &report.TestResults[i]
+		file.Name = Redact(file.Name)
+		file.Status = Redact(file.Status)
 		file.Message = truncateUTF8(Redact(file.Message), 4096)
 		for j := range file.AssertionResults {
 			a := &file.AssertionResults[j]
+			a.Title = Redact(a.Title)
+			a.Status = Redact(a.Status)
+			for k := range a.AncestorTitles {
+				a.AncestorTitles[k] = Redact(a.AncestorTitles[k])
+			}
 			for k := range a.FailureMessages {
 				a.FailureMessages[k] = truncateUTF8(Redact(a.FailureMessages[k]), 4096)
 			}
@@ -145,7 +156,24 @@ func normalizeJestReport(raw []byte) (string, error) {
 // that is missing, cut short or unreadable makes the check an ERROR: without it
 // nothing establishes that the generated tests ran.
 func (h *Harness) runWithResults(ctx context.Context, kind, dir string, command []string) model.Check {
-	c, payload, truncated := h.runWith(ctx, kind, dir, command, ResultsPath)
+	return h.runWithResultsOptions(ctx, kind, dir, command, runOptions{})
+}
+
+// resultsOverBudget is the fixed text of a report that could not be recorded
+// on the check because the report-wide results budget was used up.
+const resultsOverBudget = "structured results exceeded the report budget; retained as an artifact only"
+
+// runWithResultsOptions is runWithResults with run options; o.capture is
+// always ResultsPath. Caller holds h.mu.
+//
+// Every recorded Check.Results is a Redact fixed point, so report sanitizing
+// can never alter it; a report that is not one after normalization is
+// rejected as unreadable. Results that would exceed what remains of
+// ResultsBudget are retained as the hashed test_results artifact only, and
+// the check becomes ERROR.
+func (h *Harness) runWithResultsOptions(ctx context.Context, kind, dir string, command []string, o runOptions) model.Check {
+	o.capture = ResultsPath
+	c, payload, truncated := h.runWithOptions(ctx, kind, dir, command, o)
 	if c.Status != "PASS" && c.Status != "FAIL" {
 		return c
 	}
@@ -156,11 +184,17 @@ func (h *Harness) runWithResults(ctx context.Context, kind, dir string, command 
 	} else {
 		results, err = normalizeJestReport(raw)
 	}
-	if err == nil && len(results) > coverageLimit(h.opts.MaxOutputBytes) {
+	if err == nil && !redact.IsFixedPoint(results) {
+		err = errors.New("test results are unreadable: redaction would alter the normalized report")
+	}
+	if err == nil && len(results) > PayloadLimit(h.opts.MaxOutputBytes) {
 		err = errors.New("test results exceed the sandbox payload budget")
 	}
 	if err == nil {
-		err = h.saveArtifact(c.ID+"-results.json", "test_results", []byte(results))
+		err = h.saveArtifact(c.ID+"-results.json", model.ArtifactTestResults, []byte(results))
+	}
+	if err == nil && len(results) > h.resultsRemaining() {
+		err = errors.New(resultsOverBudget)
 	}
 	if err != nil {
 		c.Status = "ERROR"
@@ -168,7 +202,7 @@ func (h *Harness) runWithResults(ctx context.Context, kind, dir string, command 
 	} else {
 		c.Results = results
 	}
-	h.checks[len(h.checks)-1] = c
+	h.replaceCheck(c)
 	return c
 }
 
