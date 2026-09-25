@@ -177,7 +177,7 @@ func TestEmptyCollectionsSerializeAsArrays(t *testing.T) {
 	if err := json.Unmarshal(data, &saved); err != nil {
 		t.Fatal(err)
 	}
-	for _, key := range []string{"linter", "checks", "hypotheses", "evidence", "reproduced_issues", "unverified", "review_targets", "artifacts", "audit"} {
+	for _, key := range []string{"linter", "checks", "hypotheses", "evidence", "reproduced_issues", "unverified", "review_targets", "artifacts", "audit", "intent_criteria", "divergences", "intent_test_failures"} {
 		values, ok := saved[key].([]any)
 		if !ok || len(values) != 0 {
 			t.Errorf("%s must be an empty JSON array, got %#v", key, saved[key])
@@ -289,6 +289,15 @@ func strayHeadings(md string) []string {
 		"## Changed-line Execution":  true,
 		"## Recorded Evidence":       true,
 		"## Artifacts":               true,
+		// v0.4 sections, in rendering order.
+		"## Dependency Preparation":                   true,
+		"## Changed Baseline Tests on Candidate Code": true,
+		"## Behavior Divergences":                     true,
+		"## Intent Test Failures":                     true,
+		"## Intent Criteria":                          true,
+		"## Mutation of Added Lines":                  true,
+		"## Differential Fuzzing":                     true,
+		"## Impact Analysis":                          true,
 	}
 	var out []string
 	for _, l := range strings.Split(md, "\n") {
