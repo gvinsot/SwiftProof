@@ -21,7 +21,7 @@
       </a>
       <nav aria-label="Main">
         <a href="getting-started.html">Getting started</a>
-        <a href="#hub">Web app</a>
+        <a href="index.html#hub">Docker</a>
         <a href="download.html">Download</a>
         <a href="docs.html">Docs</a>
         <a class="btn btn-small" href="https://github.com/gvinsot/SwiftProof">GitHub</a>
@@ -209,10 +209,11 @@ swiftproof review --base main --ci</code></pre>
     <section id="hub" class="section">
       <div class="wrap two-col">
         <div>
+          <span class="kicker">Docker</span>
           <h2>Or run it for a whole account: SwiftProof&nbsp;Hub</h2>
-          <p>The hub is the companion web application. Sign in with GitHub or GitLab, and every repository still missing a <code>.swiftproof.json</code> gets a policy proposed in one click, previewed before it is committed to the default branch.</p>
+          <p>The hub is the companion Docker image. Run one container, sign in with GitHub or GitLab, and every repository still missing a <code>.swiftproof.json</code> gets a policy proposed in one click, previewed before it is committed to the default branch.</p>
           <p>Repositories that have a policy can be watched: each new commit is analyzed and its report opens on its own. A severity slider filters the alerts from low to critical, and clicking one unfolds every modification it concerns, with the flagged lines highlighted in the diff.</p>
-          <p>One container, no database, no external service — so a company can deploy it internally against its own GitHub Enterprise or GitLab instance. In its default mode it never executes the analyzed code.</p>
+          <p>One Docker container, no database, no external service — so a company can deploy it internally against its own GitHub Enterprise or GitLab instance. In its default mode it never executes the analyzed code.</p>
           <p><a href="https://github.com/gvinsot/SwiftProof/blob/main/hub/README.md">Deploy the hub →</a></p>
         </div>
         <div class="code" aria-label="Running the SwiftProof Hub container">
@@ -293,7 +294,7 @@ Reports open by themselves, filtered by severity.</span></code></pre>
   <footer class="footer">
     <div class="wrap footer-inner">
       <span>© SwiftProof contributors · AGPL-3.0 License</span>
-      <span><a href="getting-started.html">Getting started</a> · <a href="download.html">Download</a> · <a href="docs.html">Docs</a> · <a href="https://github.com/gvinsot/SwiftProof">GitHub</a></span>
+      <span><a href="getting-started.html">Getting started</a> · <a href="index.html#hub">Docker</a> · <a href="download.html">Download</a> · <a href="docs.html">Docs</a> · <a href="https://github.com/gvinsot/SwiftProof">GitHub</a></span>
     </div>
   </footer>
 </body>
