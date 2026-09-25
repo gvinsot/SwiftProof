@@ -72,31 +72,38 @@ type Check struct {
 	DurationMS int64    `json:"duration_ms"`
 	Output     string   `json:"output"`
 	Truncated  bool     `json:"truncated"`
-	// Results is the normalized structured report a verifiable test runner
-	// wrote to {results_out}, kept apart from Output so logs cannot forge it.
-	Results string `json:"results,omitempty"`
+	// Results is the normalized structured output a verifiable runner returned on
+	// the payload channel. It is kept apart from Output so that log text cannot
+	// impersonate it; code executing in the sandbox can still write it.
+	Results string      `json:"results,omitempty"`
+	Cache   *CheckCache `json:"cache,omitempty"` // F7a: present only on base-side checks that were stored or replayed
 }
 type Evidence struct {
-	ID          string   `json:"id"`
-	Kind        string   `json:"kind"`
-	Description string   `json:"description"`
-	Path        string   `json:"path,omitempty"`
-	Output      string   `json:"output,omitempty"`
-	CheckID     string   `json:"check_id,omitempty"`
-	BaseCheckID string   `json:"base_check_id,omitempty"`
-	Status      string   `json:"status"`
-	Runner      string   `json:"runner,omitempty"`
-	TestNames   []string `json:"test_names"`
+	ID                string   `json:"id"`
+	Kind              string   `json:"kind"`
+	Description       string   `json:"description"`
+	Path              string   `json:"path,omitempty"`
+	Output            string   `json:"output,omitempty"`
+	CheckID           string   `json:"check_id,omitempty"`
+	BaseCheckID       string   `json:"base_check_id,omitempty"`
+	RepeatCheckID     string   `json:"repeat_check_id,omitempty"`    // F1: live baseline repeat
+	CriterionID       string   `json:"criterion_id,omitempty"`       // F5
+	ReferencedSymbols []string `json:"referenced_symbols,omitempty"` // F5: changed symbols the intent test references
+	Status            string   `json:"status"`
+	Runner            string   `json:"runner,omitempty"`
+	TestNames         []string `json:"test_names"`
 }
 type Hypothesis struct {
-	ID          string   `json:"id"`
-	Title       string   `json:"title"`
-	Severity    string   `json:"severity"`
-	Status      string   `json:"status"`
-	Rationale   string   `json:"rationale"`
-	EvidenceIDs []string `json:"evidence_ids"`
-	Path        string   `json:"path,omitempty"`
-	Line        int      `json:"line,omitempty"`
+	ID             string   `json:"id"`
+	Title          string   `json:"title"`
+	Severity       string   `json:"severity"`
+	Status         string   `json:"status"`
+	Rationale      string   `json:"rationale"`
+	EvidenceIDs    []string `json:"evidence_ids"`
+	Path           string   `json:"path,omitempty"`
+	Line           int      `json:"line,omitempty"`
+	CriterionID    string   `json:"criterion_id,omitempty"`    // F5
+	IntentJudgment string   `json:"intent_judgment,omitempty"` // F5: model judgment, never evidence; only on DIVERGED
 }
 type ReviewTarget struct {
 	Path      string   `json:"path"`
@@ -156,23 +163,39 @@ type ReviewSurface struct {
 	FocusedLines int    `json:"focused_lines"`
 	Note         string `json:"note"`
 }
+
+// Report is the confidence report. The JSON object of an opt-in feature
+// (prepare, base_tests, mutation, fuzz, impact, execution) is present exactly
+// when that feature was requested or configured for the run; its status then
+// says what happened. intent_criteria, divergences and intent_test_failures
+// always serialize as arrays.
 type Report struct {
-	Version          int            `json:"version"`
-	ToolVersion      string         `json:"tool_version"`
-	GeneratedAt      time.Time      `json:"generated_at"`
-	Intent           string         `json:"intent,omitempty"`
-	Change           Change         `json:"change"`
-	Policy           Policy         `json:"policy"`
-	Signals          []Signal       `json:"linter"`
-	Checks           []Check        `json:"checks"`
-	Hypotheses       []Hypothesis   `json:"hypotheses"`
-	Evidence         []Evidence     `json:"evidence"`
-	ReproducedIssues []Hypothesis   `json:"reproduced_issues"`
-	Unverified       []string       `json:"unverified"`
-	ReviewTargets    []ReviewTarget `json:"review_targets"`
-	ReviewSurface    ReviewSurface  `json:"review_surface"`
-	Coverage         Coverage       `json:"coverage"`
-	Artifacts        []Artifact     `json:"artifacts"`
-	Audit            []AuditEvent   `json:"audit"`
-	ExitCode         int            `json:"exit_code"`
+	Version            int               `json:"version"` // stays 1 (additive change)
+	ToolVersion        string            `json:"tool_version"`
+	GeneratedAt        time.Time         `json:"generated_at"`
+	Intent             string            `json:"intent,omitempty"`
+	IntentSHA256       string            `json:"intent_sha256,omitempty"` // F5
+	IntentCriteria     []IntentCriterion `json:"intent_criteria"`         // F5, always an array
+	Change             Change            `json:"change"`
+	Policy             Policy            `json:"policy"`
+	Prepare            *Prepare          `json:"prepare,omitempty"` // F8
+	Signals            []Signal          `json:"linter"`
+	Checks             []Check           `json:"checks"`
+	Hypotheses         []Hypothesis      `json:"hypotheses"`
+	Evidence           []Evidence        `json:"evidence"`
+	ReproducedIssues   []Hypothesis      `json:"reproduced_issues"`
+	BaseTests          *BaseTests        `json:"base_tests,omitempty"` // F3
+	Divergences        []Divergence      `json:"divergences"`          // F1/F2, always an array
+	IntentTestFailures []Hypothesis      `json:"intent_test_failures"` // F5, always an array
+	Unverified         []string          `json:"unverified"`
+	ReviewTargets      []ReviewTarget    `json:"review_targets"`
+	ReviewSurface      ReviewSurface     `json:"review_surface"`
+	Coverage           Coverage          `json:"coverage"`
+	Mutation           *Mutation         `json:"mutation,omitempty"`  // F4
+	Fuzz               *FuzzReport       `json:"fuzz,omitempty"`      // F2
+	Impact             *Impact           `json:"impact,omitempty"`    // F6a
+	Execution          *Execution        `json:"execution,omitempty"` // F7a
+	Artifacts          []Artifact        `json:"artifacts"`
+	Audit              []AuditEvent      `json:"audit"`
+	ExitCode           int               `json:"exit_code"`
 }

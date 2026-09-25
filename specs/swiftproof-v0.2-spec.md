@@ -1,5 +1,7 @@
 # SwiftProof V0.2 — Evidence-driven review of AI-assisted changes
 
+Extended by [swiftproof-v0.4-spec.md](swiftproof-v0.4-spec.md). §2 of that spec lists the only refinements; every other rule here remains binding.
+
 **Status:** contract for the first implemented release.  
 **Implementation:** portable Go CLI, standard library only.  
 **Outputs:** `CONFIDENCE_REPORT.md`, `confidence-report.json`, retained experiment artifacts.

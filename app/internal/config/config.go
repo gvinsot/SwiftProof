@@ -69,6 +69,11 @@ type Config struct {
 	Sandbox        Sandbox             `json:"sandbox"`
 	Reviewer       Reviewer            `json:"reviewer"`
 	SensitivePaths []string            `json:"sensitive_paths"`
+	// Optional, opt-in and release-ordered (v0.4): a policy containing any of
+	// them makes every binary before v0.4.0 exit 3, so Default never sets them.
+	Fuzz     *Fuzz     `json:"fuzz,omitempty"`
+	Mutation *Mutation `json:"mutation,omitempty"`
+	Prepare  *Prepare  `json:"prepare,omitempty"`
 }
 
 func Default(language string) Config {
@@ -230,6 +235,15 @@ func (c Config) Validate() error {
 	// compose file and appended to /run/secrets/.
 	if strings.ContainsAny(r.APIKeyEnv, "=/\\ \t\x00\r\n") {
 		return fmt.Errorf("reviewer.api_key_env must be an environment variable name")
+	}
+	if err := c.Fuzz.validate(c.Sandbox); err != nil {
+		return err
+	}
+	if err := c.Mutation.validate(c.Sandbox); err != nil {
+		return err
+	}
+	if err := c.Prepare.validate(c.Sandbox); err != nil {
+		return err
 	}
 	for _, p := range c.SensitivePaths {
 		if p == "" || strings.Contains(p, "\\") || strings.HasPrefix(p, "/") || strings.Contains(p, "..") {
