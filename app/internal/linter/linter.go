@@ -158,6 +158,9 @@ func analyzeFile(ctx context.Context, repo *gitrepo.Repository, change model.Cha
 		add("binary_change", "medium", "Binary content requires separate inspection", "Git reports a binary change; text analysis is unavailable")
 		return signals
 	}
+	if isTest(f.Path) {
+		signals = append(signals, testWeakeningSignals(f)...)
+	}
 	if isDependency(f.Path) {
 		add("dependency_change", "medium", "Dependency manifest or lockfile changed", "Review dependency versions, provenance, and transitive effects; a changed manifest does not prove a dependency was added")
 	}
