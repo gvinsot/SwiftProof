@@ -55,6 +55,10 @@ services:
       # The image needs both modules, so the context is the repository root.
       context: ..
       dockerfile: hub/Dockerfile
+      args:
+        # The build stage exports VERSION; without it /healthz and the UI would
+        # report the deployed application as "dev".
+        VERSION: "${VERSION:-dev}"
     environment:
       SWIFTPROOF_HUB_BASE_URL: "https://${SWIFTPROOF_APP_DOMAIN:-app.swiftproof.net}"
       SWIFTPROOF_HUB_DATA_DIR: /var/lib/swiftproof-hub
