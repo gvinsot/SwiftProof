@@ -1,0 +1,89 @@
+<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:w="urn:schemas-microsoft-com:office:word" xmlns="http://www.w3.org/TR/REC-html40">
+<head>
+<meta charset="utf-8">
+<title>SwiftProof - Analyse concurrentielle</title>
+<!--[if gte mso 9]><xml><w:WordDocument><w:View>Print</w:View><w:Zoom>100</w:Zoom></w:WordDocument></xml><![endif]-->
+<style>
+@page { size: A4; margin: 2.5cm; }
+body { font-family: Calibri, sans-serif; font-size: 11pt; color: #1a1a1a; line-height: 1.45; }
+h1 { font-size: 22pt; color: #1F3864; margin-bottom: 2pt; }
+h2 { font-size: 15pt; color: #2E5496; border-bottom: 1px solid #C9D5E8; padding-bottom: 3pt; margin-top: 22pt; }
+h3 { font-size: 12pt; color: #1F3864; margin-top: 14pt; margin-bottom: 4pt; }
+p.sub { color: #595959; font-size: 10pt; margin-top: 0; }
+table { border-collapse: collapse; width: 100%; font-size: 10pt; }
+th { background: #1F3864; color: #fff; text-align: left; padding: 6pt; }
+td { border-bottom: 1px solid #D9D9D9; padding: 6pt; vertical-align: top; }
+ul, ol { margin-top: 4pt; }
+li { margin-bottom: 5pt; }
+.verdict { background: #EEF3FB; border-left: 4px solid #2E5496; padding: 10pt 14pt; }
+.src { font-size: 9pt; color: #595959; }
+</style>
+</head>
+<body>
+
+<h1>SwiftProof &mdash; Analyse concurrentielle</h1>
+<p class="sub">Positionnement de la solution face au marché de la revue de code assistée par IA &middot; 25 septembre 2026</p>
+
+<h2>Périmètre de l'analyse</h2>
+<p>Analyse fondée sur la lecture du <i>README</i>, des spécifications du projet, de <i>docs/VALIDATION.md</i> et de <i>docs/PERFORMANCE.md</i>, comparée à l'état du marché 2026&nbsp;: CodeRabbit, Greptile, Qodo / PR-Agent, Cursor Bugbot, GitHub Copilot code review, Sentry Seer, SonarQube / Semgrep et Kodus.</p>
+
+<h2>1. Où SwiftProof est réellement différencié</h2>
+
+<h3>1.1 La preuve par falsification différentielle</h3>
+<p>C'est le point fort du produit, et il est quasi unique sur le marché. Un test généré qui <b>passe sur la baseline et échoue sur le candidat</b> établit que l'issue est reproduite&nbsp;; à défaut, le signal est marqué <b>UNVERIFIED</b>. Qodo et Sentry Seer génèrent eux aussi des tests, mais aucun ne les exécute contre les deux versions pour établir formellement une régression. Aucun concurrent ne sépare aussi proprement «&nbsp;hypothèse&nbsp;» et «&nbsp;preuve&nbsp;».</p>
+
+<h3>1.2 Le refus assumé du score de confiance et de l'auto-approve</h3>
+<p>Les données 2026 montrent que le véritable mode d'échec de la revue IA n'est pas le bug manqué mais la <b>fausse confiance</b> &mdash; une revue verte fait cesser de regarder &mdash; et la fatigue de bruit&nbsp;: 15 à 30&nbsp;% de commentaires IA de faible valeur, moins de 44&nbsp;% de suggestions acceptées. Le positionnement «&nbsp;ces signaux ne sont pas des bugs confirmés&nbsp;» est contre-intuitif commercialement, mais techniquement correct.</p>
+
+<h3>1.3 Le modèle de confiance</h3>
+<p>La policy provient du <b>commit de base</b>, jamais du checkout candidat&nbsp;: une PR hostile ne peut ni activer le reviewer, ni rediriger l'endpoint, ni injecter de commandes. S'y ajoute le sandbox&nbsp;: exécution non-root, sans réseau, montages en lecture seule, pas de socket Docker, aucun secret dans le conteneur, images préchargées uniquement. Face à l'injection de prompt via le contenu de PR &mdash; problème réel et largement non traité par les bots cloud &mdash; c'est un avantage tangible, en particulier en secteur régulé.</p>
+
+<h3>1.4 Souveraineté</h3>
+<p>Binaire Go autonome, endpoint et modèle BYO (y compris un modèle local sur loopback), mode <i>lint</i> 100&nbsp;% hors ligne, licence MIT. En face&nbsp;: CodeRabbit ne propose le self-hosted qu'en Enterprise (ordre de grandeur&nbsp;: 500 sièges, ~15&nbsp;k$/mois)&nbsp;; Greptile, DeepSource et Codacy sont en tarification sur devis. Le seul concurrent open source sérieux sur cet axe est PR-Agent / Qodo Merge, qui n'offre ni sandbox d'exécution ni preuve différentielle.</p>
+
+<h2>2. Où la solution décroche</h2>
+<ol>
+<li><b>Le différenciateur ne fonctionne qu'en Go.</b> L'evidence vérifiée exige une validation d'exécution par événements de test structurés, donc Go uniquement. TypeScript reste lexical&nbsp;; Python, Java et Ruby sont absents. Les concurrents couvrent plus de 20 langages. C'est la tension centrale du produit&nbsp;: l'argument unique est enfermé dans une niche.</li>
+<li><b>Pas d'intégration PR.</b> Aucune publication de commentaires inline, pas de GitHub App. Or la revue se fait <i>dans</i> la PR. C'est le seul «&nbsp;table stakes&nbsp;» manquant, et un bloqueur d'adoption plus grave que n'importe quel écart de détection.</li>
+<li><b>Pas d'index global.</b> Ni call graph, ni analyse whole-program. Les bugs inter-fichiers &mdash; précisément le terrain revendiqué par Greptile avec son index de graphe &mdash; sont hors de portée, sauf si le LLM tombe dessus par chance.</li>
+<li><b>Friction opérationnelle.</b> Docker obligatoire, image préchargée avec dépendances déjà compilées, zéro auto-install, clé <i>coverage</i> à ajouter manuellement (un binaire épinglé plus ancien rejette la clé avec exit&nbsp;3). En face&nbsp;: un clic sur une GitHub App.</li>
+<li><b>Aucun chiffre publié.</b> <i>VALIDATION.md</i> est honnête &mdash; «&nbsp;tested implementation behavior, not a measurement of human review-time savings&nbsp;». Les concurrents publient des benchmarks (Greptile&nbsp;: 82&nbsp;% de catch rate&nbsp;; Qodo&nbsp;: 60,1&nbsp;% F1&nbsp;; CodeRabbit&nbsp;: 51,2&nbsp;% F1 selon Martian) &mdash; intéressés et contradictoires, mais ils existent. Dans un bake-off en l'état, SwiftProof perd sur le recall.</li>
+</ol>
+
+<h2>3. Synthèse comparative</h2>
+<table>
+<tr><th>Critère</th><th>SwiftProof</th><th>Marché (CodeRabbit, Greptile, Qodo&hellip;)</th></tr>
+<tr><td>Preuve d'exécution différentielle</td><td>Oui (baseline vs candidat)</td><td>Non</td></tr>
+<tr><td>Couverture langages</td><td>Go (vérifié), TS (lexical)</td><td>20+ langages</td></tr>
+<tr><td>Intégration PR / commentaires inline</td><td>Absente</td><td>Standard</td></tr>
+<tr><td>Index global / call graph</td><td>Absent</td><td>Greptile&nbsp;: index de graphe</td></tr>
+<tr><td>Self-hosted &amp; souveraineté</td><td>Binaire MIT, modèle BYO, offline</td><td>Enterprise uniquement ou sur devis</td></tr>
+<tr><td>Résistance à l'injection de prompt</td><td>Policy issue du commit de base + sandbox</td><td>Peu traitée</td></tr>
+<tr><td>Benchmarks publiés</td><td>Aucun</td><td>Publiés (intéressés)</td></tr>
+</table>
+
+<h2>4. Verdict</h2>
+<div class="verdict">
+<p>SwiftProof n'est pas un concurrent de CodeRabbit&nbsp;: c'est une <b>catégorie adjacente</b> &mdash; un <i>merge gate</i> vérifiable et auto-hébergé, et non un commentateur de PR. Comparé frontalement sur «&nbsp;combien de bugs trouvés&nbsp;», il perd. Positionné comme «&nbsp;la seule couche qui n'affirme rien qu'elle ne puisse reproduire&nbsp;», il occupe un espace vide &mdash; qui se valorise à mesure que la défiance envers le code généré par IA augmente (96&nbsp;% des développeurs ne font pas pleinement confiance au code IA&nbsp;; ratio incidents/PR en hausse de 242&nbsp;%).</p>
+</div>
+
+<h2>5. Trois priorités, dans cet ordre</h2>
+<ol>
+<li><b>Étendre la preuve vérifiée à un second langage</b> (TypeScript/vitest ou Python/pytest). Tant que l'evidence est Go-only, le différenciateur n'est pas vendable au-delà d'une niche.</li>
+<li><b>Publier les résultats dans la PR &mdash; mais uniquement les findings vérifiés.</b> Wedge marketing net&nbsp;: «&nbsp;zéro commentaire non prouvé&nbsp;», la précision plutôt que le recall.</li>
+<li><b>Mesurer et publier la précision et le taux de faux positifs</b> sur un corpus de PR réelles. C'est l'axe où SwiftProof gagne&nbsp;; ne jamais courir après le recall.</li>
+</ol>
+<p>Complément plutôt que remplacement&nbsp;: SwiftProof en aval d'un CodeRabbit ou d'un Copilot &mdash; eux ratissent, lui bloque le merge sur preuve &mdash; est la story la plus défendable.</p>
+
+<h2>Sources</h2>
+<p class="src">
+Greptile &mdash; <i>Best AI Code Review Tools</i> (greptile.com/content-library/best-ai-code-review-tools)<br>
+Martian / Qodo benchmarks via Levelop (levelop.dev/blog/best-ai-code-review-tools-2026-coderabbit-greptile-qodo-compared)<br>
+Kodus &mdash; <i>CodeRabbit alternatives self-hosted</i> (kodus.io/en/coderabbit-alternative/)<br>
+Sourcegraph &mdash; <i>AI Code Review in 2026</i> (sourcegraph.com/blog/ai-code-review)<br>
+Sonar <i>2026 State of Code</i> via Hyrax (hyrax.dev/blog/sonar-2026-ai-code-trust-behavior-gap)<br>
+Sentry &mdash; <i>AI Code Review</i> (docs.sentry.io/product/ai-in-sentry/ai-code-review)
+</p>
+
+</body>
+</html>
