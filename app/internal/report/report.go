@@ -16,76 +16,95 @@ import (
 	"github.com/gvinsot/SwiftProof/app/internal/coverage"
 	"github.com/gvinsot/SwiftProof/app/internal/harness"
 	"github.com/gvinsot/SwiftProof/app/internal/model"
+	"github.com/gvinsot/SwiftProof/app/internal/redact"
 )
 
 // Finalize derives conclusions from recorded evidence, never from a model's asserted status.
 // It is idempotent, including when re-rendering a persisted report.
+//
+// Every evidence record is first re-derived from the recorded checks by the
+// verifier that owns its kind. Only a status a verifier re-derived, and that
+// equals the stored one, can support a hypothesis (see accepted), a divergence
+// or a section item. Only a REPRODUCED high or critical hypothesis sets exit 1;
+// with ci, anything that needs a human sets exit 2 when the code is still 0.
 func Finalize(r *model.Report, ci bool) {
-	r.Version = 1
-	r.ReproducedIssues = nil
-	r.ReviewTargets = nil
-	r.ExitCode = 0
-	checks := make(map[string]model.Check, len(r.Checks))
-	duplicateChecks := map[string]bool{}
-	for _, c := range r.Checks {
-		if _, exists := checks[c.ID]; exists {
-			duplicateChecks[c.ID] = true
-		}
-		checks[c.ID] = c
-	}
-	evidence := make(map[string]model.Evidence, len(r.Evidence))
-	duplicateEvidence := map[string]bool{}
-	for _, e := range r.Evidence {
-		if _, exists := evidence[e.ID]; exists {
-			duplicateEvidence[e.ID] = true
-		}
-		evidence[e.ID] = e
-	}
+	r.Version, r.ExitCode = 1, 0
+	r.ReproducedIssues, r.Divergences, r.IntentTestFailures, r.ReviewTargets = nil, nil, nil, nil
+	l := newLedger(r)
+	l.mergeOwned(verifyCoreEvidence(r, l), model.EvidenceSourceObservation, model.EvidenceDifferentialTest)
+	l.mergeOwned(verifyObservations(r, l), model.EvidenceDifferentialObservation)   // F1
+	l.mergeOwned(verifyFuzz(r, l), model.EvidenceDifferentialFuzz)                  // F2
+	l.mergeOwned(verifyBaseTests(r, l), model.EvidenceBaseTestDifferential)         // F3
+	l.mergeOwned(verifyImpactedTests(r, l), model.EvidenceImpactedTestDifferential) // F6b
+	l.mergeOwned(verifyIntentTests(r, l), model.EvidenceIntentTest)                 // F5
+	l.applyMasks(observationMasks(r, l))                                            // F0 + F1 feed
+	conclude(r, l, ci, buildDivergences)
+}
+
+// conclude assigns the final hypothesis statuses, the Finalize-derived
+// sections and the exit code from a verified ledger. divergences is
+// buildDivergences in production; tests substitute a fixed feed.
+func conclude(r *model.Report, l *ledger, ci bool, divergences func(*model.Report, *ledger) []model.Divergence) {
+	criteria := criterionIndex(r.IntentCriteria) // valid IDs occurring exactly once
 	needsHuman := len(r.Unverified) > 0
 	for i := range r.Hypotheses {
 		h := &r.Hypotheses[i]
 		h.Severity = severity(h.Severity)
 		claimed := strings.ToUpper(h.Status)
-		valid := len(h.EvidenceIDs) > 0
-		proved, tested, observed := false, false, false
-		for _, id := range h.EvidenceIDs {
-			e, ok := evidence[id]
-			if !ok || id == "" || duplicateEvidence[id] {
-				valid = false
-				continue
-			}
-			candidate, cok := checks[e.CheckID]
-			base, bok := checks[e.BaseCheckID]
-			differential := e.Kind == "differential_test" && len(e.TestNames) > 0 && cok && bok && !duplicateChecks[e.CheckID] && !duplicateChecks[e.BaseCheckID] && candidate.Kind == "generated_test_candidate" && base.Kind == "generated_test_base" && equalCommand(candidate.Command, base.Command)
-			if differential {
-				var known bool
-				candidate, known = harness.ValidateExecution(e.Runner, candidate, e.Path, e.TestNames)
-				base, _ = harness.ValidateExecution(e.Runner, base, e.Path, e.TestNames)
-				differential = known
-			}
-			if differential && base.Status == "PASS" && base.ExitCode == 0 {
-				proved = proved || e.Status == "REPRODUCED" && candidate.Status == "FAIL" && candidate.ExitCode > 0 && candidate.ExitCode < 125
-				tested = tested || e.Status == "NOT_REPRODUCED" && candidate.Status == "PASS" && candidate.ExitCode == 0
-			}
-			// A source observation can support a dismissal, but is not executable proof.
-			observed = observed || e.Kind == "source_observation" && e.Status == "OBSERVED" && e.Output != ""
-		}
+		valid, supported := l.supports(h, claimed, criteria)
 		switch {
-		case claimed == "REPRODUCED" && valid && proved:
-			h.Status = "REPRODUCED"
+		case claimed == model.StatusReproduced && valid && supported:
+			h.Status = model.StatusReproduced
 			r.ReproducedIssues = append(r.ReproducedIssues, *h)
 			if rank(h.Severity) >= rank("high") {
 				r.ExitCode = 1
 			}
-		case claimed == "NOT_REPRODUCED" && valid && tested:
-			h.Status = "NOT_REPRODUCED"
-		case claimed == "DISMISSED" && valid && observed && strings.TrimSpace(h.Rationale) != "":
-			h.Status = "DISMISSED"
+		case claimed == model.StatusDiverged && valid && supported:
+			// A recorded difference, never a defect: it requests review and
+			// never produces exit 1.
+			h.Status = model.StatusDiverged
+			needsHuman = true
+		case claimed == model.StatusIntentTestFailed && valid && supported:
+			// Candidate-only and model-written: it requests review and never
+			// enters reproduced_issues.
+			h.Status = model.StatusIntentTestFailed
+			r.IntentTestFailures = append(r.IntentTestFailures, *h)
+			needsHuman = true
+		case claimed == model.StatusNotReproduced && valid && supported:
+			h.Status = model.StatusNotReproduced
+		case claimed == model.StatusDismissed && valid && supported && strings.TrimSpace(h.Rationale) != "":
+			h.Status = model.StatusDismissed
 		default:
-			h.Status = "UNVERIFIED"
+			h.Status = model.StatusUnverified
+			needsHuman = true
+		}
+		// After the final status: drops intent_judgment unless the status is
+		// DIVERGED, and drops a criterion_id that is not in criteria. Each drop
+		// returns a fixed Unverified note (F5).
+		if note := normalizeIntentLink(h, criteria); note != "" {
+			r.Unverified = append(r.Unverified, note)
 			needsHuman = true
 		}
 	}
+	r.Divergences = divergences(r, l) // F0; fed by observationDivergences (F1) + fuzzDivergences (F2)
+	if len(r.Divergences) > 0 {
+		needsHuman = true
+	}
+	if finalizeBaseTests(r, l) { // F3
+		needsHuman = true
+	}
+	if finalizeFuzz(r, l) { // F2
+		needsHuman = true
+	}
+	if finalizeMutation(r, verifyMutation(r)) { // F4: unverified mutants become INCONCLUSIVE
+		needsHuman = true
+	}
+	if finalizeImpact(r, l) { // F6a/F6b
+		needsHuman = true
+	}
+	finalizeExecution(r, l) // F7a: replay_backed + note normalization
+	finalizePrepare(r)      // F8: note normalization only
+	// The mutation ledger is excluded: mutants are expected to fail.
 	for _, c := range r.Checks {
 		if c.Status != "PASS" || c.ExitCode != 0 {
 			needsHuman = true
@@ -218,9 +237,13 @@ func targets(r *model.Report) ([]model.ReviewTarget, model.ReviewSurface) {
 		add(s.Path, s.Side, s.Line, s.EndLine, s.Severity, s.Summary, s.ID)
 	}
 	for _, h := range r.Hypotheses {
-		if h.Status == "UNVERIFIED" || h.Status == "REPRODUCED" {
+		switch h.Status {
+		case model.StatusUnverified, model.StatusReproduced, model.StatusDiverged, model.StatusIntentTestFailed:
 			add(h.Path, "new", h.Line, h.Line, h.Severity, h.Title, "")
 		}
+	}
+	for _, t := range extraTargets(r) {
+		add(t.path, t.side, t.start, t.end, t.severity, t.reason, "")
 	}
 	var out []model.ReviewTarget
 	focused := 0
@@ -300,7 +323,14 @@ func unique(values []string) []string {
 
 // Markdown renders repository/model strings as escaped text; it never emits remote images or raw HTML.
 func Markdown(r *model.Report) []byte {
-	r = Sanitize(r)
+	return renderMarkdown(Sanitize(r))
+}
+
+// renderMarkdown renders an already sanitized report. The section order is
+// fixed; a v0.4 section writer emits its own heading ("\n## Title\n" followed
+// by a blank line, like the surrounding sections) and every string it renders
+// goes through inline().
+func renderMarkdown(r *model.Report) []byte {
 	var b bytes.Buffer
 	line(&b, "# Change Confidence Report\n")
 	fmt.Fprintf(&b, "## Change Summary\n\n%d additions / %d deletions · %d files changed\n\n", r.Change.Additions, r.Change.Deletions, len(r.Change.Files))
@@ -317,6 +347,9 @@ func Markdown(r *model.Report) []byte {
 		fmt.Fprintf(&b, "Intent: %s\n\n", inline(r.Intent))
 	}
 	fmt.Fprintf(&b, "Exit code: %d. No confidence percentage is assigned.\n\n", r.ExitCode)
+	if r.Prepare != nil {
+		writePrepare(&b, r) // F8: "## Dependency Preparation"
+	}
 	line(&b, "## Automated Checks\n")
 	if len(r.Checks) == 0 {
 		line(&b, "No checks were executed.\n")
@@ -326,13 +359,18 @@ func Markdown(r *model.Report) []byte {
 		if c.Truncated {
 			line(&b, "  Output was truncated.")
 		}
+		if n := cacheNote(c); n != "" { // F7a
+			line(&b, "  "+n)
+		}
 	}
+	writeExecution(&b, r) // F7a
 	line(&b, "\n## Investigation Summary\n")
 	if len(r.Hypotheses) == 0 {
 		line(&b, "No structured hypotheses were investigated.\n")
 	}
 	for _, h := range r.Hypotheses {
 		fmt.Fprintf(&b, "- **%s / %s** %s (%s): %s\n", inline(h.Status), inline(h.Severity), inline(h.Title), inline(h.ID), inline(h.Rationale))
+		writeIntentLink(&b, r, h) // F5
 	}
 	line(&b, "\n## Reproduced Issues\n")
 	if len(r.ReproducedIssues) == 0 {
@@ -340,6 +378,14 @@ func Markdown(r *model.Report) []byte {
 	}
 	for _, h := range r.ReproducedIssues {
 		fmt.Fprintf(&b, "- **%s** %s — %s:%d\n  Evidence: %s\n", inline(h.Severity), inline(h.Title), inline(h.Path), h.Line, inline(strings.Join(h.EvidenceIDs, ", ")))
+		writeIntentLink(&b, r, h) // F5
+	}
+	if r.BaseTests != nil {
+		writeBaseTests(&b, r) // F3: "## Changed Baseline Tests on Candidate Code"
+	}
+	writeDivergences(&b, r) // F0: "## Behavior Divergences", always rendered
+	if r.Intent != "" || len(r.IntentCriteria) > 0 || len(r.IntentTestFailures) > 0 {
+		writeIntentSections(&b, r) // F5: "## Intent Test Failures" and "## Intent Criteria"
 	}
 	line(&b, "\n## Unverified Areas\n")
 	n := 0
@@ -348,7 +394,7 @@ func Markdown(r *model.Report) []byte {
 		n++
 	}
 	for _, h := range r.Hypotheses {
-		if h.Status == "UNVERIFIED" {
+		if h.Status == model.StatusUnverified {
 			fmt.Fprintf(&b, "- %s: %s\n", inline(h.Title), inline(h.Rationale))
 			n++
 		}
@@ -399,11 +445,20 @@ func Markdown(r *model.Report) []byte {
 	default:
 		line(&b, "No coverage command is configured, so changed-line execution was not measured.")
 	}
+	if r.Mutation != nil {
+		writeMutation(&b, r) // F4: "## Mutation of Added Lines"
+	}
+	if r.Fuzz != nil {
+		writeFuzz(&b, r) // F2: "## Differential Fuzzing"
+	}
+	if r.Impact != nil {
+		writeImpact(&b, r) // F6a: "## Impact Analysis"
+	}
 	line(&b, "\n## Recorded Evidence\n")
 	for _, e := range r.Evidence {
 		fmt.Fprintf(&b, "- %s — %s (%s): %s\n", inline(e.ID), inline(e.Kind), inline(e.Status), inline(e.Description))
-		if e.CheckID != "" {
-			fmt.Fprintf(&b, "  Candidate check: %s; baseline check: %s\n", inline(e.CheckID), inline(e.BaseCheckID))
+		if l := evidenceCheckLine(e); l != "" {
+			line(&b, "  "+l)
 		}
 	}
 	if len(r.Artifacts) > 0 {
@@ -416,6 +471,101 @@ func Markdown(r *model.Report) []byte {
 	line(&b, "\n---\n")
 	fmt.Fprintf(&b, "%s\n", Attribution(r.ToolVersion))
 	return b.Bytes()
+}
+
+// Fixed texts of the Behavior Divergences section.
+const (
+	noExperimentText = "No observation or fuzz experiment was recorded."
+	noDivergenceText = "No recorded experiment diverged. Where values were compared, they were equal for the recorded inputs; values are bounded, redacted serializations, and this does not establish equivalent behavior, even for those inputs."
+	// maxDivergenceRowsShown caps the value rows rendered per divergence; the
+	// JSON keeps every validated row.
+	maxDivergenceRowsShown = 20
+)
+
+// writeDivergences renders the always-present Behavior Divergences section
+// from r.Divergences, which only Finalize fills with validated entries. Every
+// string goes through inline(); it emits no code span and no link.
+func writeDivergences(b *bytes.Buffer, r *model.Report) {
+	line(b, "\n## Behavior Divergences\n")
+	if len(r.Divergences) == 0 {
+		recorded := false
+		for _, e := range r.Evidence {
+			if e.Kind == model.EvidenceDifferentialObservation || e.Kind == model.EvidenceDifferentialFuzz {
+				recorded = true
+				break
+			}
+		}
+		if recorded {
+			line(b, noDivergenceText)
+		} else {
+			line(b, noExperimentText)
+		}
+		return
+	}
+	for _, d := range r.Divergences {
+		anchor := "no anchor"
+		if d.Path != "" {
+			anchor = inline(d.Path)
+			if d.Line > 0 {
+				anchor += fmt.Sprintf(":%d", d.Line)
+			}
+			if d.AnchorSource == anchorChangedFunction {
+				anchor += " (changed function)"
+			} else {
+				anchor += " (model-chosen location)"
+			}
+		}
+		hypotheses := "none"
+		if len(d.HypothesisIDs) > 0 {
+			hypotheses = inline(strings.Join(d.HypothesisIDs, ", "))
+		}
+		fmt.Fprintf(b, "- **%s** %s — %s; test %s (%s); hypotheses: %s\n", inline(d.EvidenceID), inline(d.Kind), anchor, inline(d.TestPath), inline(strings.Join(d.TestNames, ", ")), hypotheses)
+		for i, o := range d.Observations {
+			if i == maxDivergenceRowsShown {
+				fmt.Fprintf(b, "  - … %d more in confidence-report.json\n", len(d.Observations)-maxDivergenceRowsShown)
+				break
+			}
+			cut := ""
+			if o.Truncated {
+				cut = " (values cut for display)"
+			}
+			fmt.Fprintf(b, "  - %s: baseline %s; candidate %s%s\n", inline(o.Key), observedValue(o.Base, o.BaseRecorded), observedValue(o.Candidate, o.CandidateRecorded), cut)
+		}
+	}
+	fmt.Fprintf(b, "\n%s\n", inline(model.DivergenceNote))
+}
+
+// observedValue renders one side of a divergence row. The markers are written
+// unescaped, so a recorded value (always escaped) cannot produce them.
+func observedValue(v string, recorded bool) string {
+	switch {
+	case !recorded:
+		return "(not recorded)"
+	case v == "":
+		return "(empty)"
+	}
+	return inline(v)
+}
+
+// evidenceCheckLine names the checks an evidence record rests on, or returns
+// "" when it cites none.
+func evidenceCheckLine(e model.Evidence) string {
+	if e.CheckID == "" {
+		return ""
+	}
+	var s string
+	switch e.Kind {
+	case model.EvidenceIntentTest:
+		s = fmt.Sprintf("Candidate check: %s (candidate-only; no baseline control)", inline(e.CheckID))
+	case model.EvidenceBaseTestDifferential:
+		s = fmt.Sprintf("Hybrid-tree check: %s; baseline check: %s", inline(e.CheckID), inline(e.BaseCheckID))
+	default:
+		s = fmt.Sprintf("Candidate check: %s; baseline check: %s", inline(e.CheckID), inline(e.BaseCheckID))
+	}
+	if e.RepeatCheckID != "" {
+		s += "; baseline repeat: " + inline(e.RepeatCheckID)
+	}
+	return s
 }
 
 // Attribution is the notice that identifies SwiftProof in generated reports.
@@ -439,33 +589,43 @@ func inline(s string) string {
 
 func line(b *bytes.Buffer, s string) { b.WriteString(s); b.WriteByte('\n') }
 
-// Write replaces each report atomically. It validates all formats before touching disk.
-func Write(dir string, r *model.Report, formats []string) error {
-	r = Sanitize(r)
+// Write replaces each report atomically. It validates every format, sanitizes
+// the report once and renders every requested format into memory before it
+// touches disk, so a validation or render error writes nothing. Callers run
+// Finalize first.
+func Write(dir string, r *model.Report, formats []string, opts ...Option) error {
 	if len(formats) == 0 {
-		formats = []string{"markdown", "json"}
+		formats = []string{FormatMarkdown, FormatJSON}
 	}
 	for _, format := range formats {
-		if format != "markdown" && format != "json" {
+		if !ValidFormat(format) {
 			return fmt.Errorf("unsupported report format %q", format)
 		}
+	}
+	var o writeOptions
+	for _, opt := range opts {
+		if opt != nil {
+			opt(&o)
+		}
+	}
+	safe := Sanitize(r)
+	type rendered struct {
+		name string
+		data []byte
+	}
+	var files []rendered
+	for _, format := range unique(formats) {
+		name, data, err := renderFormat(format, safe, o)
+		if err != nil {
+			return err
+		}
+		files = append(files, rendered{name, data})
 	}
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return err
 	}
-	for _, format := range unique(formats) {
-		name := "CONFIDENCE_REPORT.md"
-		data := Markdown(r)
-		if format == "json" {
-			name = "confidence-report.json"
-			var err error
-			data, err = json.MarshalIndent(r, "", "  ")
-			if err != nil {
-				return err
-			}
-			data = append(data, '\n')
-		}
-		if err := atomicWrite(filepath.Join(dir, name), data); err != nil {
+	for _, f := range files {
+		if err := atomicWrite(filepath.Join(dir, f.name), f.data); err != nil {
 			return err
 		}
 	}
@@ -506,7 +666,7 @@ func redactValue(v reflect.Value) {
 	switch v.Kind() {
 	case reflect.String:
 		if v.CanSet() {
-			v.SetString(harness.Redact(v.String()))
+			v.SetString(redact.Redact(v.String()))
 		}
 	case reflect.Struct:
 		for i := 0; i < v.NumField(); i++ {
