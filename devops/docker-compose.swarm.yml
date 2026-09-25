@@ -1,9 +1,13 @@
 version: "3.9"
 
-# Docker Swarm stack for the SwiftProof promotional website, deployed by
-# PulsarCD behind the Traefik v3 edge (WAF, security headers, rate limiting
-# through global@file). Only web/ is deployed: the CLI in app/ is shipped as
-# GitHub release binaries, not as a service.
+# Docker Swarm stack deployed by PulsarCD behind the Traefik v3 edge (WAF,
+# security headers, rate limiting through global@file):
+#
+#   swiftproof-web  the promotional website        https://swiftproof.net
+#   swiftproof-app  the hub, i.e. the web app      https://app.swiftproof.net
+#
+# The CLI in app/ is not a service: it ships as GitHub release binaries and,
+# for the hub, inside the hub image that runs it.
 
 services:
   swiftproof-web:
@@ -40,6 +44,74 @@ services:
         - "traefik.http.routers.swiftproof-web-http.entrypoints=web"
         - "traefik.http.routers.swiftproof-web-http.middlewares=redirect-to-https@file"
         - "traefik.http.routers.swiftproof-web-http.service=noop@internal"
+
+  # The web application. One replica, because its state — sealed forge tokens,
+  # tracked repositories and a bounded report history — lives in one volume.
+  # Back that volume up: losing it makes every user sign in again and reinstall
+  # their webhooks.
+  swiftproof-app:
+    image: registry.methodinfo.fr/swiftproof-hub:latest
+    build:
+      # The image needs both modules, so the context is the repository root.
+      context: ..
+      dockerfile: hub/Dockerfile
+    environment:
+      SWIFTPROOF_HUB_BASE_URL: "https://${SWIFTPROOF_APP_DOMAIN:-app.swiftproof.net}"
+      SWIFTPROOF_HUB_DATA_DIR: /var/lib/swiftproof-hub
+      # lint never executes repository code; review needs a Docker socket.
+      SWIFTPROOF_HUB_MODE: "${SWIFTPROOF_HUB_MODE:-lint}"
+      SWIFTPROOF_HUB_WORKERS: "${SWIFTPROOF_HUB_WORKERS:-2}"
+      SWIFTPROOF_HUB_DEFAULT_BRANCH_ONLY: "${SWIFTPROOF_HUB_DEFAULT_BRANCH_ONLY:-false}"
+      # Serve the application even before an OAuth app exists: the sign-in page
+      # then states that no forge is configured, instead of the task crash
+      # looping and the domain answering 502.
+      SWIFTPROOF_HUB_ALLOW_NO_FORGE: "${SWIFTPROOF_HUB_ALLOW_NO_FORGE:-true}"
+      SWIFTPROOF_HUB_GITHUB_CLIENT_ID: "${SWIFTPROOF_HUB_GITHUB_CLIENT_ID:-}"
+      SWIFTPROOF_HUB_GITHUB_URL: "${SWIFTPROOF_HUB_GITHUB_URL:-https://github.com}"
+      SWIFTPROOF_HUB_GITHUB_API_URL: "${SWIFTPROOF_HUB_GITHUB_API_URL:-https://api.github.com}"
+      SWIFTPROOF_HUB_GITLAB_CLIENT_ID: "${SWIFTPROOF_HUB_GITLAB_CLIENT_ID:-}"
+      SWIFTPROOF_HUB_GITLAB_URL: "${SWIFTPROOF_HUB_GITLAB_URL:-https://gitlab.com}"
+      # The client secrets and the session key follow the cluster convention:
+      # a variable whose name ends in _SECRET or _KEY becomes a Docker secret
+      # mounted at /run/secrets/<NAME>, which the hub reads on its own.
+      SWIFTPROOF_HUB_GITHUB_CLIENT_SECRET: "${SWIFTPROOF_HUB_GITHUB_CLIENT_SECRET:-}"
+      SWIFTPROOF_HUB_GITLAB_CLIENT_SECRET: "${SWIFTPROOF_HUB_GITLAB_CLIENT_SECRET:-}"
+      SWIFTPROOF_HUB_SESSION_KEY: "${SWIFTPROOF_HUB_SESSION_KEY:-}"
+    volumes:
+      - swiftproof-hub-data:/var/lib/swiftproof-hub
+    networks:
+      - proxy
+    deploy:
+      mode: replicated
+      replicas: 1
+      placement:
+        constraints:
+          - node.labels.gpu == none
+      update_config:
+        # stop-first: the state directory belongs to the running task.
+        order: stop-first
+        parallelism: 1
+      restart_policy:
+        condition: on-failure
+      labels:
+        - "traefik.enable=true"
+        - "traefik.docker.network=proxy"
+        - "traefik.http.services.swiftproof-app.loadbalancer.server.port=8080"
+
+        # HTTPS router
+        - "traefik.http.routers.swiftproof-app.rule=Host(`${SWIFTPROOF_APP_DOMAIN:-app.swiftproof.net}`)"
+        - "traefik.http.routers.swiftproof-app.entrypoints=websecure"
+        - "traefik.http.routers.swiftproof-app.tls.certresolver=letsencrypt"
+        - "traefik.http.routers.swiftproof-app.middlewares=global@file"
+
+        # HTTP -> HTTPS redirect
+        - "traefik.http.routers.swiftproof-app-http.rule=Host(`${SWIFTPROOF_APP_DOMAIN:-app.swiftproof.net}`)"
+        - "traefik.http.routers.swiftproof-app-http.entrypoints=web"
+        - "traefik.http.routers.swiftproof-app-http.middlewares=redirect-to-https@file"
+        - "traefik.http.routers.swiftproof-app-http.service=noop@internal"
+
+volumes:
+  swiftproof-hub-data:
 
 networks:
   proxy:

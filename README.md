@@ -40,14 +40,16 @@ docker run --rm -p 8080:80 swiftproof-web   # http://localhost:8080
 ```
 
 Deployment goes through PulsarCD with `devops/docker-compose.swarm.yml`; copy
-`devops/.env.example` to `devops/.env` to set the public domain.
+`devops/.env.example` to `devops/.env` to set the public domains.
 
 ## Web application
 
 The hub complements the website: sign in with GitHub or GitLab, let it create a
 `.swiftproof.json` policy in the repositories that have none, and read a
 severity-filtered report for every new commit — clicking an alert unfolds the
-modifications it concerns.
+modifications it concerns. It is deployed from the same stack as the website and
+served on [app.swiftproof.net](https://app.swiftproof.net), linked from every
+page of the site.
 
 ```sh
 docker build -f hub/Dockerfile -t swiftproof-hub .
@@ -59,7 +61,9 @@ docker run --rm -p 8080:8080 \
 ```
 
 It runs as a single container with no database, so a company can deploy it
-internally against its own GitHub Enterprise or GitLab instance. Images are
+internally against its own GitHub Enterprise or GitLab instance. Sign-in needs
+an OAuth application per forge; until one is configured the deployment still
+serves, and its sign-in page says that no forge is available. Images are
 published to Docker Hub by `hub/scripts/postbuild.sh` (wired into CI by
 `devops/github-workflows/hub.yml`, to be copied into `.github/workflows/`); see
 [hub/README.md](hub/README.md) for the configuration and the security model.

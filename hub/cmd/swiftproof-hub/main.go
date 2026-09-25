@@ -73,11 +73,14 @@ The service is configured through the environment:
 
   SWIFTPROOF_HUB_GITHUB_CLIENT_ID / _SECRET [, _URL, _API_URL, _SCOPES]
   SWIFTPROOF_HUB_GITLAB_CLIENT_ID / _SECRET [, _URL, _SCOPES]
+  SWIFTPROOF_HUB_ALLOW_NO_FORGE      serve without sign-in while no forge is
+                                     configured (default false)
 
 Commands: no argument serves the application, "healthcheck" probes /healthz
 from inside the container, "version" prints the build.
 
-At least one forge must be configured. See hub/README.md.
+At least one forge must be configured, unless the deployment opts into
+starting without sign-in. See hub/README.md.
 `
 
 func run() error {
@@ -128,6 +131,10 @@ func run() error {
 	forges := make([]string, 0, len(providers))
 	for kind := range providers {
 		forges = append(forges, kind)
+	}
+	if len(forges) == 0 {
+		log.Warn("no forge configured: the application serves, but nobody can sign in until " +
+			"SWIFTPROOF_HUB_GITHUB_CLIENT_ID/_SECRET or the GitLab pair is set")
 	}
 	log.Info("starting", "version", version, "addr", cfg.Addr, "base_url", cfg.BaseURL,
 		"mode", cfg.Mode, "workers", cfg.Workers, "forges", forges, "cli", runner.Version(ctx))

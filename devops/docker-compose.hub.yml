@@ -1,7 +1,13 @@
 version: "3.9"
 
-# Docker Swarm stack for the SwiftProof Hub, deployed by PulsarCD behind the
-# Traefik v3 edge (WAF, security headers, rate limiting through global@file).
+# Docker Swarm stack for the SwiftProof Hub on its own, behind a Traefik v3
+# edge (WAF, security headers, rate limiting through global@file).
+#
+# This file is for a company running only the hub, from the published image.
+# The swiftproof.net deployment does not use it: PulsarCD deploys a single
+# stack from docker-compose.swarm.yml, where the hub is the swiftproof-app
+# service on app.swiftproof.net. Change the domain here and this stack stands
+# alone.
 #
 # The hub keeps its state in one volume: sealed forge tokens, the tracked
 # repositories and a bounded report history. Back that volume up; losing it

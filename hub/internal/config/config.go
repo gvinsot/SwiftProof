@@ -166,8 +166,13 @@ func Load(getenv func(string) string) (Config, error) {
 		}
 		c.Forges[GitLab] = f
 	}
-	if len(c.Forges) == 0 {
-		return c, fmt.Errorf("configure at least one forge: set SWIFTPROOF_HUB_GITHUB_CLIENT_ID or SWIFTPROOF_HUB_GITLAB_CLIENT_ID")
+	// A deployment normally has to name a forge, so a typo in the OAuth
+	// variables fails loudly instead of serving an application nobody can sign
+	// in to. SWIFTPROOF_HUB_ALLOW_NO_FORGE is the deliberate exception: it lets
+	// a public deployment answer on its domain before its OAuth application
+	// exists, with a sign-in page that says no forge is configured.
+	if len(c.Forges) == 0 && !envBool(getenv, "SWIFTPROOF_HUB_ALLOW_NO_FORGE", false) {
+		return c, fmt.Errorf("configure at least one forge: set SWIFTPROOF_HUB_GITHUB_CLIENT_ID or SWIFTPROOF_HUB_GITLAB_CLIENT_ID, or SWIFTPROOF_HUB_ALLOW_NO_FORGE=true to start without sign-in")
 	}
 
 	if err := os.MkdirAll(c.DataDir, 0o700); err != nil {

@@ -86,6 +86,7 @@ webhooks there.
 | `SWIFTPROOF_HUB_GITHUB_URL` / `_API_URL` | github.com | Point these at a GitHub Enterprise Server host (`https://ghe.internal`, `https://ghe.internal/api/v3`). |
 | `SWIFTPROOF_HUB_GITLAB_CLIENT_ID` / `_SECRET` | — | GitLab OAuth application. |
 | `SWIFTPROOF_HUB_GITLAB_URL` | gitlab.com | Self-managed GitLab base URL. |
+| `SWIFTPROOF_HUB_ALLOW_NO_FORGE` | `false` | Start and serve the UI while no forge is configured, instead of refusing to start. Sign-in stays unavailable and the sign-in page says so; used so a public deployment answers on its domain before its OAuth application exists. |
 
 Any `*_SECRET` may also be supplied as `<NAME>_FILE` or through
 `/run/secrets/<NAME>`, following the Docker secret convention the CLI uses.

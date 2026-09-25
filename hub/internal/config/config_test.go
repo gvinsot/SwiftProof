@@ -111,6 +111,33 @@ func TestLoadRefusesAnIncompleteDeployment(t *testing.T) {
 	}
 }
 
+// A public deployment is allowed to answer on its domain before its OAuth
+// application exists; the sign-in page then states that no forge is available.
+func TestLoadAllowsNoForgeWhenTheDeploymentOptsIn(t *testing.T) {
+	dir := t.TempDir()
+	c, err := Load(envOf(map[string]string{
+		"SWIFTPROOF_HUB_BASE_URL":       "https://app.example",
+		"SWIFTPROOF_HUB_DATA_DIR":       dir,
+		"SWIFTPROOF_HUB_ALLOW_NO_FORGE": "true",
+	}))
+	if err != nil {
+		t.Fatalf("an opted-in deployment without a forge must load: %v", err)
+	}
+	if len(c.Forges) != 0 {
+		t.Errorf("no forge must be configured, got %d", len(c.Forges))
+	}
+	// The opt-in only covers a missing forge: a half-configured one still fails.
+	if _, err := Load(envOf(map[string]string{
+		"SWIFTPROOF_HUB_BASE_URL":             "https://app.example",
+		"SWIFTPROOF_HUB_DATA_DIR":             dir,
+		"SWIFTPROOF_HUB_ALLOW_NO_FORGE":       "true",
+		"SWIFTPROOF_HUB_GITHUB_CLIENT_ID":     "id",
+		"SWIFTPROOF_HUB_GITHUB_CLIENT_SECRET": "",
+	})); err == nil {
+		t.Error("a client id without its secret must still be refused")
+	}
+}
+
 func TestLoadValidatesBounds(t *testing.T) {
 	dir := t.TempDir()
 	for name, override := range map[string]map[string]string{
