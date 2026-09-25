@@ -18,3 +18,22 @@ These are indicative single-machine measurements with short benchmark windows. T
 The implementation caps concurrent Go source readers at eight, indexes report lines by file, and limits diff/source/snapshot size. Report generation retains the parsed change in memory; very large PRs may hit explicit limits rather than produce incomplete clean results. Every container starts fresh, deliberately trading warm build-cache performance for independent observations.
 
 Future end-to-end evaluation should measure small/large real PRs with and without checks/reviewer, memory peaks, useful findings, false positives, missed regressions and developer review duration. Any caching must key on immutable commits, policy and image identity without letting one untrusted run poison another.
+
+## v0.4 stage costs
+
+Each block below records measured costs of one v0.4 stage, and nothing that was not measured. The worst-case wall-clock formula for a whole review is in [CI integration](CI.md#runtime-bounds-deadline-and-report-size).
+
+<!-- F2:begin -->
+<!-- F2:end -->
+
+<!-- F4:begin -->
+<!-- F4:end -->
+
+<!-- F6:begin -->
+<!-- F6:end -->
+
+<!-- F7:begin -->
+<!-- F7:end -->
+
+<!-- F8:begin -->
+<!-- F8:end -->
