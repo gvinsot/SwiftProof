@@ -268,7 +268,9 @@ func TestRunDeadlineSkipsUnstartedRuns(t *testing.T) {
 	if c.Status != "SKIPPED" || c.Output != deadlineText || *calls != 0 {
 		t.Fatalf("a run started after the overall deadline: %+v (calls %d)", c, *calls)
 	}
-	if !strings.Contains(strings.ToLower(c.Output), "overall deadline reached") {
+	// The text names both limits a run context can carry, so a reviewer call
+	// made after reviewer.timeout_seconds is not blamed on --deadline alone.
+	if !strings.Contains(c.Output, "--deadline") || !strings.Contains(c.Output, "reviewer time limit") {
 		t.Fatalf("deadline text %q", c.Output)
 	}
 	// A cancellation that is not a deadline keeps the v0.2 path: the executor
@@ -415,6 +417,58 @@ func TestMutationLedgerIsSeparate(t *testing.T) {
 	}
 }
 
+// Log text candidate code writes never makes a candidate-side v0.4 run ERROR:
+// the inherited v0.2 log rules apply only to the v0.2 kinds, to
+// generated_test_intent and to the baseline-side v0.4 kinds (§1.17).
+func TestLogTextDecidesErrorOnlyForTrustedLogKinds(t *testing.T) {
+	const forged = "fork/exec /tmp/x: permission denied\n[setup failed]\nFAIL\n"
+	for _, tt := range []struct {
+		kind, ledger, want string
+	}{
+		{model.CheckFuzzCandidate, "", "FAIL"},
+		{model.CheckFuzzCandidateConfirm, "", "FAIL"},
+		{model.CheckBaseTestHybrid, "", "FAIL"},
+		{model.CheckImpactedTestCandidate, "", "FAIL"},
+		{model.CheckMutant, ledgerMutation, "FAIL"},
+		{model.CheckMutationControl, ledgerMutation, "FAIL"},
+		{"unlisted_kind", "", "FAIL"},
+		// Unchanged v0.2 behavior, and the kinds whose log is not candidate-written.
+		{"test", "", "ERROR"},
+		{model.CheckExistingTest, "", "ERROR"},
+		{model.CheckGeneratedCandidate, "", "ERROR"},
+		{model.CheckGeneratedIntent, "", "ERROR"},
+		{model.CheckGeneratedBase, "", "ERROR"},
+		{model.CheckGeneratedBaseRepeat, "", "ERROR"},
+		{model.CheckFuzzBase, "", "ERROR"},
+		{model.CheckFuzzBaseConfirm, "", "ERROR"},
+		{model.CheckBaseTestBase, "", "ERROR"},
+		{model.CheckImpactedTestBase, "", "ERROR"},
+	} {
+		t.Run(tt.kind, func(t *testing.T) {
+			h := fixture(t)
+			countingExec(h, forged, 1)
+			c, _, _ := runLocked(h, context.Background(), tt.kind, h.candidate, baseCommand, runOptions{ledger: tt.ledger})
+			if c.Status != tt.want {
+				t.Fatalf("%s with a forged setup-failure log: %s, want %s", tt.kind, c.Status, tt.want)
+			}
+		})
+	}
+	// Infrastructure causes stay ERROR for every kind.
+	for _, kind := range []string{model.CheckFuzzCandidate, model.CheckBaseTestHybrid, model.CheckImpactedTestCandidate, model.CheckMutant} {
+		h := fixture(t)
+		countingExec(h, "ok\n", 125)
+		if c, _, _ := runLocked(h, context.Background(), kind, h.candidate, baseCommand, runOptions{}); c.Status != "ERROR" {
+			t.Fatalf("%s with exit 125: %s", kind, c.Status)
+		}
+		h.execute = func(context.Context, string, []string, io.Writer) execution {
+			return execution{ExitCode: -1, Err: errors.New("docker: cannot connect")}
+		}
+		if c, _, _ := runLocked(h, context.Background(), kind, h.candidate, baseCommand, runOptions{}); c.Status != "ERROR" {
+			t.Fatalf("%s with an executor error: %s", kind, c.Status)
+		}
+	}
+}
+
 func TestChecksDeepCopyCommandAndCache(t *testing.T) {
 	h := fixture(t)
 	h.mu.Lock()
@@ -525,6 +579,24 @@ func TestCacheNeverServesBeforeTwoAgreeingLiveRuns(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("the replayed log was not re-saved as check-3.log")
+	}
+}
+
+// The execution summary reports what the harness counted itself plus what the
+// store reports; neither half may be dropped (F7a replaces Execution).
+func TestExecutionReportsHarnessAndStoreCounters(t *testing.T) {
+	h := fixture(t)
+	m := useMemoryCache(h)
+	countingExec(h, "base run output\n", 0)
+	for i := 0; i < 3; i++ { // miss (stored), miss (stored), hit
+		runBase(h, runOptions{})
+	}
+	m.mu.Lock()
+	m.stats = model.ExecutionCache{Rejected: 2, Evicted: 1}
+	m.mu.Unlock()
+	c := h.Execution().Cache
+	if c.Hits != 1 || c.Misses != 2 || c.Stored != 2 || c.Rejected != 2 || c.Evicted != 1 || c.Uncacheable != 0 || c.WriteFailures != 0 || c.Contradicted != 0 {
+		t.Fatalf("execution cache counters %+v", c)
 	}
 }
 

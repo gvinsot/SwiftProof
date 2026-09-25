@@ -42,3 +42,25 @@ type ExecutionCache interface {
 	Delete(key string) error
 	Stats() model.ExecutionCache // counters for the summary
 }
+
+// cacheCountersLocked returns the execution-cache counters of the summary: the
+// ones the harness observed (h.cacheCounts, kept by run.go) plus the ones the
+// store reports (Stats). Only the eight counter fields are set; the caller
+// fills status, scope, identity and note. Execution() must report these
+// counters, whoever implements it. Caller holds h.mu.
+func (h *Harness) cacheCountersLocked() model.ExecutionCache {
+	c := h.cacheCounts
+	if h.exec.cache != nil {
+		s := h.exec.cache.Stats()
+		c.Hits += s.Hits
+		c.Stored += s.Stored
+		c.Misses += s.Misses
+		c.Uncacheable += s.Uncacheable
+		c.Rejected += s.Rejected
+		c.WriteFailures += s.WriteFailures
+		c.Evicted += s.Evicted
+		c.Contradicted += s.Contradicted
+	}
+	return model.ExecutionCache{Hits: c.Hits, Stored: c.Stored, Misses: c.Misses, Uncacheable: c.Uncacheable,
+		Rejected: c.Rejected, WriteFailures: c.WriteFailures, Evicted: c.Evicted, Contradicted: c.Contradicted}
+}

@@ -169,8 +169,9 @@ const resultsOverBudget = "structured results exceeded the report budget; retain
 // Every recorded Check.Results is a Redact fixed point, so report sanitizing
 // can never alter it; a report that is not one after normalization is
 // rejected as unreadable. Results that would exceed what remains of
-// ResultsBudget are retained as the hashed test_results artifact only, and
-// the check becomes ERROR.
+// ResultsBudget for the run's side (resultsRemainingFor: candidate-side
+// results share at most half of it) are retained as the hashed test_results
+// artifact only, and the check becomes ERROR.
 func (h *Harness) runWithResultsOptions(ctx context.Context, kind, dir string, command []string, o runOptions) model.Check {
 	o.capture = ResultsPath
 	c, payload, truncated := h.runWithOptions(ctx, kind, dir, command, o)
@@ -193,7 +194,7 @@ func (h *Harness) runWithResultsOptions(ctx context.Context, kind, dir string, c
 	if err == nil {
 		err = h.saveArtifact(c.ID+"-results.json", model.ArtifactTestResults, []byte(results))
 	}
-	if err == nil && len(results) > h.resultsRemaining() {
+	if err == nil && len(results) > h.resultsRemainingFor(kind) {
 		err = errors.New(resultsOverBudget)
 	}
 	if err != nil {

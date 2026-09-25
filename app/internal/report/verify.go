@@ -25,6 +25,22 @@ type ledger struct {
 	rejected map[string]bool
 }
 
+// verifyReport builds the ledger of r and runs every evidence verifier and the
+// masks, in the order Finalize uses. Its verified map is the only source of
+// evidence statuses that may support anything; the Markdown renderer re-runs
+// it so that what it prints agrees with what Finalize accepted.
+func verifyReport(r *model.Report) *ledger {
+	l := newLedger(r)
+	l.mergeOwned(verifyCoreEvidence(r, l), model.EvidenceSourceObservation, model.EvidenceDifferentialTest)
+	l.mergeOwned(verifyObservations(r, l), model.EvidenceDifferentialObservation)   // F1
+	l.mergeOwned(verifyFuzz(r, l), model.EvidenceDifferentialFuzz)                  // F2
+	l.mergeOwned(verifyBaseTests(r, l), model.EvidenceBaseTestDifferential)         // F3
+	l.mergeOwned(verifyImpactedTests(r, l), model.EvidenceImpactedTestDifferential) // F6b
+	l.mergeOwned(verifyIntentTests(r, l), model.EvidenceIntentTest)                 // F5
+	l.applyMasks(observationMasks(r, l))                                            // F0 + F1 feed
+	return l
+}
+
 // newLedger indexes r.Checks and r.Evidence. An ID recorded more than once is
 // marked duplicated, and every lookup of it fails.
 func newLedger(r *model.Report) *ledger {
@@ -359,13 +375,16 @@ func buildDivergences(r *model.Report, l *ledger) []model.Divergence {
 
 // selectDivergences keeps a candidate entry only when its evidence resolves,
 // has the entry's kind and verified status DIVERGED, the entry has at least
-// one DIVERGED row, and it cites at least the kind's minimum number of check
-// IDs, each resolving in the ledger. It keeps DIVERGED rows only (at most
-// maxDivergenceRows), cites the hypotheses whose final status is DIVERGED and
-// which cite the entry, anchors observation entries at the lowest-index such
-// hypothesis whose path names a changed, non-deleted file, sets the fixed note,
-// and orders entries by the position of their evidence in r.Evidence, one
-// entry per evidence ID. It must run after the hypothesis statuses are final.
+// one DIVERGED row with a non-empty test and key, and it cites at least the
+// kind's minimum number of check IDs, each resolving in the ledger. The test
+// path and names fall back to the evidence record's; an entry still without a
+// test path, or with an empty test name, is dropped, so every kept entry is
+// schema-valid. It keeps DIVERGED rows only (at most maxDivergenceRows), keeps
+// a fuzz entry's changed-function anchor only when its path names a changed,
+// non-deleted file, sets the fixed note, and orders entries by the position of
+// their evidence in r.Evidence, one entry per evidence ID. It does not read the
+// hypotheses: linkDivergences cites and anchors through them once their
+// statuses are final.
 func selectDivergences(r *model.Report, l *ledger, feed []model.Divergence) []model.Divergence {
 	position := map[string]int{}
 	for i, e := range r.Evidence {
@@ -396,7 +415,7 @@ func selectDivergences(r *model.Report, l *ledger, feed []model.Divergence) []mo
 		}
 		rows := []model.Observation{}
 		for _, o := range d.Observations {
-			if o.Status == model.ObservationDiverged && len(rows) < maxDivergenceRows {
+			if o.Status == model.ObservationDiverged && o.Test != "" && o.Key != "" && len(rows) < maxDivergenceRows {
 				rows = append(rows, o)
 			}
 		}
@@ -419,25 +438,15 @@ func selectDivergences(r *model.Report, l *ledger, feed []model.Divergence) []mo
 		if len(entry.TestNames) == 0 {
 			entry.TestNames = append(entry.TestNames, e.TestNames...)
 		}
-		if len(entry.TestNames) == 0 {
+		if entry.TestPath == "" || len(entry.TestNames) == 0 || hasEmpty(entry.TestNames) {
 			continue
 		}
-		// A fuzz entry keeps the changed function its feed selected; an
-		// observation entry is anchored only through a citing hypothesis.
-		if d.Kind == model.EvidenceDifferentialFuzz && d.Path != "" {
+		// A fuzz entry keeps the changed function its feed selected, when that
+		// function's file is a changed, non-deleted file; an observation entry
+		// is anchored only through a citing hypothesis (linkDivergences).
+		if d.Kind == model.EvidenceDifferentialFuzz && d.Path != "" && live[d.Path] {
 			entry.Path, entry.Line, entry.Symbol, entry.AnchorSource = d.Path, d.Line, d.Symbol, anchorChangedFunction
 		}
-		var citing []string
-		for _, h := range r.Hypotheses {
-			if h.Status != model.StatusDiverged || !cites(h, d.EvidenceID) {
-				continue
-			}
-			citing = append(citing, h.ID)
-			if d.Kind == model.EvidenceDifferentialObservation && entry.Path == "" && h.Path != "" && live[h.Path] {
-				entry.Path, entry.Line, entry.AnchorSource = h.Path, h.Line, anchorHypothesis
-			}
-		}
-		entry.HypothesisIDs = unique(citing)
 		kept[d.EvidenceID] = true
 		out = append(out, entry)
 	}
@@ -445,9 +454,52 @@ func selectDivergences(r *model.Report, l *ledger, feed []model.Divergence) []mo
 	return out
 }
 
+// linkDivergences sets each entry's HypothesisIDs to the hypotheses whose final
+// status is DIVERGED and which cite the entry, sorted, and anchors an
+// unanchored observation entry at the lowest-index such hypothesis whose path
+// names a changed, non-deleted file. It must run after the hypothesis statuses
+// are final. It returns the entries, modified in place.
+func linkDivergences(r *model.Report, entries []model.Divergence) []model.Divergence {
+	live := liveChangedPaths(r)
+	for i := range entries {
+		entry := &entries[i]
+		var citing []string
+		for _, h := range r.Hypotheses {
+			if h.Status != model.StatusDiverged || !cites(h, entry.EvidenceID) {
+				continue
+			}
+			citing = append(citing, h.ID)
+			if entry.Kind == model.EvidenceDifferentialObservation && entry.Path == "" && h.Path != "" && live[h.Path] {
+				entry.Path, entry.Line, entry.AnchorSource = h.Path, h.Line, anchorHypothesis
+			}
+		}
+		entry.HypothesisIDs = unique(citing)
+	}
+	return entries
+}
+
 func cites(h model.Hypothesis, id string) bool {
 	for _, cited := range h.EvidenceIDs {
 		if cited == id {
+			return true
+		}
+	}
+	return false
+}
+
+// citesAny reports whether h cites at least one evidence ID in ids.
+func citesAny(h model.Hypothesis, ids map[string]bool) bool {
+	for _, cited := range h.EvidenceIDs {
+		if ids[cited] {
+			return true
+		}
+	}
+	return false
+}
+
+func hasEmpty(values []string) bool {
+	for _, v := range values {
+		if v == "" {
 			return true
 		}
 	}

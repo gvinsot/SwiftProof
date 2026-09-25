@@ -2,6 +2,7 @@ package report
 
 import (
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -20,6 +21,24 @@ func ledgerWith(evidence []model.Evidence, verified map[string]string) *ledger {
 }
 
 func noDivergences(*model.Report, *ledger) []model.Divergence { return nil }
+
+// citedDivergences is a test feed that lists one minimal entry for every
+// verified DIVERGED record a hypothesis cites, bypassing the check-ID rules of
+// selectDivergences (tested on their own in divergences_test.go).
+func citedDivergences(r *model.Report, l *ledger) []model.Divergence {
+	var out []model.Divergence
+	for _, e := range r.Evidence {
+		cited := false
+		for _, h := range r.Hypotheses {
+			cited = cited || cites(h, e.ID)
+		}
+		if cited && l.verified[e.ID] == model.StatusDiverged {
+			out = append(out, model.Divergence{EvidenceID: e.ID, Kind: e.Kind, TestPath: "calc/x_test.go", TestNames: []string{"TestX"}, CheckIDs: []string{}, HypothesisIDs: []string{},
+				Observations: []model.Observation{{Test: "TestX", Key: "k", Status: model.ObservationDiverged}}, Note: model.DivergenceNote})
+		}
+	}
+	return out
+}
 
 var (
 	allEvidenceKinds = []string{
@@ -302,7 +321,7 @@ func TestConcludeStatusesAndExitCodes(t *testing.T) {
 			for _, e := range evidence {
 				l.verified[e.ID] = e.Status
 			}
-			conclude(r, l, ci, noDivergences)
+			conclude(r, l, ci, citedDivergences)
 			want := tt.exit
 			if ci {
 				want = tt.exitCI
@@ -324,6 +343,72 @@ func TestConcludeStatusesAndExitCodes(t *testing.T) {
 				t.Errorf("%s: review target present=%v, want %v (%+v)", tt.name, targeted, tt.targeted, r.ReviewTargets)
 			}
 		}
+	}
+}
+
+// The derived lists copy a hypothesis only after its intent link is
+// normalized: each copy equals its hypothesis, the written report stays
+// schema-valid, and a second Finalize changes nothing.
+func TestDerivedListsCopyNormalizedHypotheses(t *testing.T) {
+	r := goProof(goPass, goFail)
+	r.Hypotheses[0].IntentJudgment, r.Hypotheses[0].CriterionID = model.JudgmentExpectedChange, "AC-7"
+	Finalize(r, true)
+	h := r.Hypotheses[0]
+	if h.Status != model.StatusReproduced || h.IntentJudgment != "" || h.CriterionID != "" || r.ExitCode != 1 {
+		t.Fatalf("hypothesis after Finalize: %+v exit %d", h, r.ExitCode)
+	}
+	if len(r.ReproducedIssues) != 1 || !reflect.DeepEqual(r.ReproducedIssues[0], h) {
+		t.Fatalf("reproduced issue differs from its hypothesis:\n%+v\n%+v", r.ReproducedIssues, h)
+	}
+	if len(r.Unverified) != 1 || !strings.Contains(r.Unverified[0], "hypothesis h1") {
+		t.Fatalf("no discard note: %q", r.Unverified)
+	}
+	first, _ := json.Marshal(r)
+	Finalize(r, true)
+	second, _ := json.Marshal(r)
+	if string(first) != string(second) {
+		t.Fatalf("Finalize is not idempotent:\n%s\n%s", first, second)
+	}
+	// INTENT_TEST_FAILED keeps its known criterion and loses the judgment,
+	// which only a DIVERGED hypothesis may carry.
+	e := model.Evidence{ID: "intent", Kind: model.EvidenceIntentTest, Status: model.StatusIntentTestFailed, CriterionID: "AC-1"}
+	r = &model.Report{Evidence: []model.Evidence{e}, IntentCriteria: []model.IntentCriterion{{ID: "AC-1", Text: "x"}},
+		Hypotheses: []model.Hypothesis{{ID: "h2", Status: "INTENT_TEST_FAILED", EvidenceIDs: []string{"intent"}, CriterionID: "AC-1", IntentJudgment: model.JudgmentUnexpectedChange}}}
+	l := newLedger(r)
+	l.verified["intent"] = e.Status
+	conclude(r, l, true, noDivergences)
+	if h := r.Hypotheses[0]; h.Status != model.StatusIntentTestFailed || h.CriterionID != "AC-1" || h.IntentJudgment != "" || len(r.IntentTestFailures) != 1 || !reflect.DeepEqual(r.IntentTestFailures[0], h) {
+		t.Fatalf("intent test failure copy: %+v / %+v", r.IntentTestFailures, h)
+	}
+}
+
+func TestNormalizeIntentLink(t *testing.T) {
+	criteria := criterionIndex([]model.IntentCriterion{{ID: "AC-1", Text: "x"}})
+	for _, tt := range []struct {
+		name                       string
+		h                          model.Hypothesis
+		criterion, judgment        string
+		note                       bool
+	}{
+		{"no link", model.Hypothesis{Status: model.StatusReproduced}, "", "", false},
+		{"known criterion kept", model.Hypothesis{Status: model.StatusUnverified, CriterionID: "AC-1"}, "AC-1", "", false},
+		{"diverged judgment kept", model.Hypothesis{Status: model.StatusDiverged, CriterionID: "AC-1", IntentJudgment: model.JudgmentExpectedChange}, "AC-1", model.JudgmentExpectedChange, false},
+		{"unknown criterion dropped", model.Hypothesis{Status: model.StatusDiverged, CriterionID: "AC-2", IntentJudgment: model.JudgmentExpectedChange}, "", "", true},
+		{"judgment on another status dropped", model.Hypothesis{Status: model.StatusReproduced, CriterionID: "AC-1", IntentJudgment: model.JudgmentUnexpectedChange}, "AC-1", "", true},
+		{"judgment without criterion dropped", model.Hypothesis{Status: model.StatusDiverged, IntentJudgment: model.JudgmentUnexpectedChange}, "", "", true},
+		{"unknown judgment dropped", model.Hypothesis{Status: model.StatusDiverged, CriterionID: "AC-1", IntentJudgment: "correct"}, "AC-1", "", true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			h := tt.h
+			h.ID = "hypothesis-1"
+			note := normalizeIntentLink(&h, criteria)
+			if h.CriterionID != tt.criterion || h.IntentJudgment != tt.judgment || (note != "") != tt.note || h.Status != tt.h.Status {
+				t.Fatalf("got %+v note %q", h, note)
+			}
+			if again := normalizeIntentLink(&h, criteria); again != "" {
+				t.Fatalf("second call returned %q", again)
+			}
+		})
 	}
 }
 

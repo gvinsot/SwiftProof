@@ -4,7 +4,9 @@ package harness
 // store point, replay, agreement counting and eviction live in run.go and are
 // complete; F7a replaces keyFor, confirmBaseline and Execution, and may add
 // fields and functions. run.go relies on the fields and methods declared
-// here: execState.cache, keyFor and preimage.
+// here: execState.cache, keyFor and preimage (keyFor records the preimage of
+// every key it returns; run.go stores it on each new entry). Execution must
+// report h.cacheCountersLocked(), the harness counters plus Stats().
 
 import (
 	"context"
@@ -93,9 +95,11 @@ func (h *Harness) confirmBaseline(ctx context.Context, runner, path string, name
 }
 
 // Execution summarizes the cache, parallelism and budget. The stub returns the
-// zero value plus Budget().
+// cache counters (cacheCountersLocked) and Budget(), and leaves the rest zero.
 func (h *Harness) Execution() model.Execution {
-	return model.Execution{Budget: h.Budget()}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return model.Execution{Cache: h.cacheCountersLocked(), Budget: h.budgetLocked()}
 }
 
 func sha256Hex(b []byte) string {

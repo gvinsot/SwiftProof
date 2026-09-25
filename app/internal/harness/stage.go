@@ -159,6 +159,38 @@ func (h *Harness) resultsRemaining() int {
 	return ResultsBudget - h.resultsBytes
 }
 
+// baselineSideKind reports whether kind is a baseline-side run: a kind ending
+// in "_base", or one of the baseline re-run kinds generated_test_base_repeat
+// and fuzz_base_confirm. Candidate code never writes what such a run returns.
+func baselineSideKind(kind string) bool {
+	return strings.HasSuffix(kind, "_base") || kind == model.CheckGeneratedBaseRepeat || kind == model.CheckFuzzBaseConfirm
+}
+
+// resultsRemainingFor is what a run of this kind may still add to
+// Check.Results. The results of every other kind, which candidate code can
+// write, share at most half of ResultsBudget, so they can never use up the half
+// that baseline-side captures rely on: an over-budget baseline capture is then
+// caused by baseline-side output alone. Every capture that records Results
+// checks this, not resultsRemaining. Caller holds h.mu.
+func (h *Harness) resultsRemainingFor(kind string) int {
+	remaining := h.resultsRemaining()
+	if baselineSideKind(kind) {
+		return remaining
+	}
+	candidate := 0
+	for _, ledger := range [][]model.Check{h.checks, h.mutationChecks} {
+		for _, c := range ledger {
+			if !baselineSideKind(c.Kind) {
+				candidate += len(c.Results)
+			}
+		}
+	}
+	if share := ResultsBudget/2 - candidate; share < remaining {
+		remaining = share
+	}
+	return remaining
+}
+
 // PayloadLimit derives the per-run payload budget from trusted policy rather
 // than introducing an unconfigurable host buffer: 16 × max_output_bytes,
 // bounded to [256 KiB, 4 MiB]. A real coverage profile runs to hundreds of

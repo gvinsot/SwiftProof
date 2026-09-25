@@ -74,16 +74,27 @@ func validateMutationCommand(argv []string) error {
 	if path.Base(argv[0]) != "go" || argv[1] != "test" {
 		return fmt.Errorf("mutation.command must start with \"go\", \"test\"")
 	}
+	placeholder := func(arg string) error {
+		for _, token := range []string{PackagePlaceholder, "{file}", coverage.Placeholder, ResultsPlaceholder} {
+			if strings.Contains(arg, token) {
+				return fmt.Errorf("mutation.command may contain %s only as one standalone argument and no other placeholder", PackagePlaceholder)
+			}
+		}
+		return nil
+	}
+	// "{package}/go" passes the path.Base test above: no placeholder may appear
+	// anywhere except the one standalone {package} after "test".
+	if err := placeholder(argv[0]); err != nil {
+		return err
+	}
 	packages, jsonFlags := 0, 0
 	for _, arg := range argv[2:] {
 		if arg == PackagePlaceholder {
 			packages++
 			continue
 		}
-		for _, token := range []string{PackagePlaceholder, "{file}", coverage.Placeholder, ResultsPlaceholder} {
-			if strings.Contains(arg, token) {
-				return fmt.Errorf("mutation.command may contain %s only as one standalone argument and no other placeholder", PackagePlaceholder)
-			}
+		if err := placeholder(arg); err != nil {
+			return err
 		}
 		if arg == "-json" {
 			jsonFlags++

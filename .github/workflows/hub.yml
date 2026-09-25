@@ -1,0 +1,119 @@
+name: Hub
+
+# Copy this file to .github/workflows/hub.yml to activate it. It is kept here
+# because publishing a workflow needs a token with the `workflow` scope, which
+# the agent that wrote it does not have.
+#
+# Tests the web application, builds its image, and publishes it to Docker Hub
+# after the build. Pull requests and forks build without publishing: the push
+# step needs the DOCKERHUB_USERNAME / DOCKERHUB_TOKEN secrets.
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+    paths:
+      - 'hub/**'
+      - 'app/**'
+      - 'go.work'
+      - '.github/workflows/hub.yml'
+  pull_request:
+    paths:
+      - 'hub/**'
+      - 'app/**'
+      - 'go.work'
+      - '.github/workflows/hub.yml'
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: 'Publish the image to Docker Hub'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: hub/go.mod
+          cache: false
+      - run: go build ./hub/...
+      - run: go vet ./hub/...
+      - run: go test ./hub/...
+      - run: go test -race ./hub/...
+      - name: Check formatting
+        shell: bash
+        run: |
+          set -euo pipefail
+          unformatted="$(gofmt -l hub)"
+          if [[ -n "$unformatted" ]]; then
+            echo "gofmt needed for:"; echo "$unformatted"; exit 1
+          fi
+
+  image:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Resolve the version
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_REF_TYPE" == tag ]]; then
+            version="$GITHUB_REF_NAME"
+          else
+            version="dev-${GITHUB_SHA:0:12}"
+          fi
+          [[ "$version" =~ ^[0-9A-Za-z][0-9A-Za-z._+-]{0,127}$ ]] || exit 1
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Decide whether to publish
+        id: publish
+        env:
+          HAS_CREDENTIALS: ${{ secrets.DOCKERHUB_TOKEN != '' }}
+          REQUESTED: ${{ inputs.publish }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          publish=false
+          if [[ "$HAS_CREDENTIALS" == "true" && "$GITHUB_EVENT_NAME" != "pull_request" ]]; then
+            if [[ "$GITHUB_REF_TYPE" == tag || "$GITHUB_REF_NAME" == main || "$REQUESTED" == "true" ]]; then
+              publish=true
+            fi
+          fi
+          echo "publish=$publish" >> "$GITHUB_OUTPUT"
+
+      # The post-build step: build, tag, and push to Docker Hub.
+      - name: Build and publish the image
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          PUSH: ${{ steps.publish.outputs.publish }}
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+          BUILDX_BUILDER: default
+        run: hub/scripts/postbuild.sh
+
+      - name: Smoke test the built image
+        if: steps.publish.outputs.publish != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          image="${DOCKERHUB_USERNAME:-gvinsot}/swiftproof-hub:${{ steps.version.outputs.version }}"
+          docker run --rm "$image" version
+          docker run --rm "$image" help | grep -q SWIFTPROOF_HUB_BASE_URL
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}

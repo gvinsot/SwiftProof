@@ -30,23 +30,25 @@ import (
 func Finalize(r *model.Report, ci bool) {
 	r.Version, r.ExitCode = 1, 0
 	r.ReproducedIssues, r.Divergences, r.IntentTestFailures, r.ReviewTargets = nil, nil, nil, nil
-	l := newLedger(r)
-	l.mergeOwned(verifyCoreEvidence(r, l), model.EvidenceSourceObservation, model.EvidenceDifferentialTest)
-	l.mergeOwned(verifyObservations(r, l), model.EvidenceDifferentialObservation)   // F1
-	l.mergeOwned(verifyFuzz(r, l), model.EvidenceDifferentialFuzz)                  // F2
-	l.mergeOwned(verifyBaseTests(r, l), model.EvidenceBaseTestDifferential)         // F3
-	l.mergeOwned(verifyImpactedTests(r, l), model.EvidenceImpactedTestDifferential) // F6b
-	l.mergeOwned(verifyIntentTests(r, l), model.EvidenceIntentTest)                 // F5
-	l.applyMasks(observationMasks(r, l))                                            // F0 + F1 feed
-	conclude(r, l, ci, buildDivergences)
+	conclude(r, verifyReport(r), ci, buildDivergences)
 }
 
 // conclude assigns the final hypothesis statuses, the Finalize-derived
 // sections and the exit code from a verified ledger. divergences is
 // buildDivergences in production; tests substitute a fixed feed.
+//
+// The divergence entries are validated before any hypothesis is concluded: a
+// DIVERGED claim is accepted only when it cites an entry that the Behavior
+// Divergences section lists, so the two can never disagree. The entries are
+// linked to their citing hypotheses once every status is final.
 func conclude(r *model.Report, l *ledger, ci bool, divergences func(*model.Report, *ledger) []model.Divergence) {
 	criteria := criterionIndex(r.IntentCriteria) // valid IDs occurring exactly once
 	needsHuman := len(r.Unverified) > 0
+	entries := divergences(r, l) // F0; fed by observationDivergences (F1) + fuzzDivergences (F2)
+	listed := make(map[string]bool, len(entries))
+	for _, d := range entries {
+		listed[d.EvidenceID] = true
+	}
 	for i := range r.Hypotheses {
 		h := &r.Hypotheses[i]
 		h.Severity = severity(h.Severity)
@@ -55,11 +57,10 @@ func conclude(r *model.Report, l *ledger, ci bool, divergences func(*model.Repor
 		switch {
 		case claimed == model.StatusReproduced && valid && supported:
 			h.Status = model.StatusReproduced
-			r.ReproducedIssues = append(r.ReproducedIssues, *h)
 			if rank(h.Severity) >= rank("high") {
 				r.ExitCode = 1
 			}
-		case claimed == model.StatusDiverged && valid && supported:
+		case claimed == model.StatusDiverged && valid && supported && citesAny(*h, listed):
 			// A recorded difference, never a defect: it requests review and
 			// never produces exit 1.
 			h.Status = model.StatusDiverged
@@ -68,7 +69,6 @@ func conclude(r *model.Report, l *ledger, ci bool, divergences func(*model.Repor
 			// Candidate-only and model-written: it requests review and never
 			// enters reproduced_issues.
 			h.Status = model.StatusIntentTestFailed
-			r.IntentTestFailures = append(r.IntentTestFailures, *h)
 			needsHuman = true
 		case claimed == model.StatusNotReproduced && valid && supported:
 			h.Status = model.StatusNotReproduced
@@ -85,8 +85,16 @@ func conclude(r *model.Report, l *ledger, ci bool, divergences func(*model.Repor
 			r.Unverified = append(r.Unverified, note)
 			needsHuman = true
 		}
+		// The derived lists copy the hypothesis only once it is normalized, so
+		// that each copy equals its hypothesis and Finalize stays idempotent.
+		switch h.Status {
+		case model.StatusReproduced:
+			r.ReproducedIssues = append(r.ReproducedIssues, *h)
+		case model.StatusIntentTestFailed:
+			r.IntentTestFailures = append(r.IntentTestFailures, *h)
+		}
 	}
-	r.Divergences = divergences(r, l) // F0; fed by observationDivergences (F1) + fuzzDivergences (F2)
+	r.Divergences = linkDivergences(r, entries)
 	if len(r.Divergences) > 0 {
 		needsHuman = true
 	}
@@ -331,6 +339,9 @@ func Markdown(r *model.Report) []byte {
 // by a blank line, like the surrounding sections) and every string it renders
 // goes through inline().
 func renderMarkdown(r *model.Report) []byte {
+	// The statuses Finalize accepts, re-derived the same way, so that the
+	// Behavior Divergences and Recorded Evidence texts never claim more.
+	verified := verifyReport(r).verified
 	var b bytes.Buffer
 	line(&b, "# Change Confidence Report\n")
 	fmt.Fprintf(&b, "## Change Summary\n\n%d additions / %d deletions · %d files changed\n\n", r.Change.Additions, r.Change.Deletions, len(r.Change.Files))
@@ -359,8 +370,8 @@ func renderMarkdown(r *model.Report) []byte {
 		if c.Truncated {
 			line(&b, "  Output was truncated.")
 		}
-		if n := cacheNote(c); n != "" { // F7a
-			line(&b, "  "+n)
+		if n := cacheNote(c); n != "" { // F7a: plain text, escaped here
+			line(&b, "  "+inline(n))
 		}
 	}
 	writeExecution(&b, r) // F7a
@@ -383,7 +394,7 @@ func renderMarkdown(r *model.Report) []byte {
 	if r.BaseTests != nil {
 		writeBaseTests(&b, r) // F3: "## Changed Baseline Tests on Candidate Code"
 	}
-	writeDivergences(&b, r) // F0: "## Behavior Divergences", always rendered
+	writeDivergences(&b, r, verified) // F0: "## Behavior Divergences", always rendered
 	if r.Intent != "" || len(r.IntentCriteria) > 0 || len(r.IntentTestFailures) > 0 {
 		writeIntentSections(&b, r) // F5: "## Intent Test Failures" and "## Intent Criteria"
 	}
@@ -456,7 +467,11 @@ func renderMarkdown(r *model.Report) []byte {
 	}
 	line(&b, "\n## Recorded Evidence\n")
 	for _, e := range r.Evidence {
-		fmt.Fprintf(&b, "- %s — %s (%s): %s\n", inline(e.ID), inline(e.Kind), inline(e.Status), inline(e.Description))
+		status := inline(e.Status)
+		if e.Status != model.StatusUnverified && verified[e.ID] != e.Status {
+			status += "; " + notAcceptedText
+		}
+		fmt.Fprintf(&b, "- %s — %s (%s): %s\n", inline(e.ID), inline(e.Kind), status, inline(e.Description))
 		if l := evidenceCheckLine(e); l != "" {
 			line(&b, "  "+l)
 		}
@@ -473,32 +488,49 @@ func renderMarkdown(r *model.Report) []byte {
 	return b.Bytes()
 }
 
-// Fixed texts of the Behavior Divergences section.
+// Fixed texts of the Behavior Divergences section and of Recorded Evidence.
 const (
 	noExperimentText = "No observation or fuzz experiment was recorded."
 	noDivergenceText = "No recorded experiment diverged. Where values were compared, they were equal for the recorded inputs; values are bounded, redacted serializations, and this does not establish equivalent behavior, even for those inputs."
+	// unvalidatedText replaces noDivergenceText when an observation or fuzz
+	// record has no accepted NOT_DIVERGED status (unverified, unstable or
+	// incomparable values, or a stored status the recorded checks do not
+	// support): nothing may then be said about equal values.
+	unvalidatedText = "No validated divergence was recorded. %d of %d observation or fuzz records did not yield a validated result (see Recorded Evidence and Unverified Areas); this does not establish equivalent behavior."
+	// notAcceptedText follows a stored evidence status that Finalize did not
+	// accept: not re-derived from the recorded checks, or withdrawn.
+	notAcceptedText = "as stored; not accepted as evidence"
 	// maxDivergenceRowsShown caps the value rows rendered per divergence; the
 	// JSON keeps every validated row.
 	maxDivergenceRowsShown = 20
 )
 
 // writeDivergences renders the always-present Behavior Divergences section
-// from r.Divergences, which only Finalize fills with validated entries. Every
-// string goes through inline(); it emits no code span and no link.
-func writeDivergences(b *bytes.Buffer, r *model.Report) {
+// from r.Divergences, which only Finalize fills with validated entries, and
+// verified, the evidence statuses Finalize accepts. Without an entry, it says
+// that values were equal only when every observation or fuzz record has an
+// accepted NOT_DIVERGED status. Every string goes through inline(); it emits
+// no code span and no link.
+func writeDivergences(b *bytes.Buffer, r *model.Report, verified map[string]string) {
 	line(b, "\n## Behavior Divergences\n")
 	if len(r.Divergences) == 0 {
-		recorded := false
+		recorded, unvalidated := 0, 0
 		for _, e := range r.Evidence {
-			if e.Kind == model.EvidenceDifferentialObservation || e.Kind == model.EvidenceDifferentialFuzz {
-				recorded = true
-				break
+			if e.Kind != model.EvidenceDifferentialObservation && e.Kind != model.EvidenceDifferentialFuzz {
+				continue
+			}
+			recorded++
+			if verified[e.ID] != model.StatusNotDiverged {
+				unvalidated++
 			}
 		}
-		if recorded {
-			line(b, noDivergenceText)
-		} else {
+		switch {
+		case recorded == 0:
 			line(b, noExperimentText)
+		case unvalidated == 0:
+			line(b, noDivergenceText)
+		default:
+			line(b, fmt.Sprintf(unvalidatedText, unvalidated, recorded))
 		}
 		return
 	}

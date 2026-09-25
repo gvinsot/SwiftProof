@@ -1,6 +1,7 @@
 package report
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -23,6 +24,7 @@ func divergenceFixture() *model.Report {
 			{ID: "evidence-2", Kind: model.EvidenceDifferentialObservation, Status: model.StatusDiverged, Path: "calc/obs_test.go", TestNames: []string{"TestDiscount"}},
 			{ID: "evidence-3", Kind: model.EvidenceDifferentialObservation, Status: model.StatusNotDiverged, Path: "calc/eq_test.go", TestNames: []string{"TestEqual"}},
 			{ID: "evidence-4", Kind: model.EvidenceDifferentialObservation, Status: model.StatusDiverged, Path: "calc/other_test.go", TestNames: []string{"TestOther"}},
+			{ID: "evidence-5", Kind: model.EvidenceDifferentialObservation, Status: model.StatusDiverged, TestNames: []string{"TestNoPath"}},
 		},
 	}
 	for i := 1; i <= 8; i++ {
@@ -66,7 +68,7 @@ func fuzzEntry(id string) model.Divergence {
 
 func TestSelectDivergencesKeepsOnlyValidatedEntries(t *testing.T) {
 	r := divergenceFixture()
-	l := verifiedLedger(r, "evidence-1", "evidence-2", "evidence-3")
+	l := verifiedLedger(r, "evidence-1", "evidence-2", "evidence-3", "evidence-5")
 	tooFewObservationChecks := observationEntry("evidence-2")
 	tooFewObservationChecks.CheckIDs = tooFewObservationChecks.CheckIDs[:2]
 	tooFewFuzzChecks := fuzzEntry("evidence-1")
@@ -81,6 +83,16 @@ func TestSelectDivergencesKeepsOnlyValidatedEntries(t *testing.T) {
 	noRows.Observations = []model.Observation{{Test: "TestDiscount", Key: "k", Status: model.ObservationEqual, Base: "1", Candidate: "1"}}
 	otherKind := observationEntry("evidence-2")
 	otherKind.Kind = model.EvidenceDifferentialTest
+	// Entries the schema would reject: no test path even after the fallback to
+	// the evidence record, an empty test name, rows without a test or a key.
+	noTestPath := observationEntry("evidence-5")
+	noTestPath.TestPath = ""
+	emptyName := observationEntry("evidence-2")
+	emptyName.TestNames = []string{"TestDiscount", ""}
+	emptyRowTest := observationEntry("evidence-2")
+	emptyRowTest.Observations[0].Test = ""
+	emptyRowKey := observationEntry("evidence-2")
+	emptyRowKey.Observations[0].Key = ""
 	for name, d := range map[string]model.Divergence{
 		"too few observation checks": tooFewObservationChecks,
 		"too few fuzz checks":        tooFewFuzzChecks,
@@ -91,6 +103,10 @@ func TestSelectDivergencesKeepsOnlyValidatedEntries(t *testing.T) {
 		"missing evidence":           missing,
 		"no DIVERGED row":            noRows,
 		"not a divergence kind":      otherKind,
+		"no test path":               noTestPath,
+		"empty test name":            emptyName,
+		"row without a test":         emptyRowTest,
+		"row without a key":          emptyRowKey,
 	} {
 		if got := selectDivergences(r, l, []model.Divergence{d}); len(got) != 0 {
 			t.Errorf("%s: kept %+v", name, got)
@@ -100,6 +116,14 @@ func TestSelectDivergencesKeepsOnlyValidatedEntries(t *testing.T) {
 	r.Checks = append(r.Checks, model.Check{ID: "check-3"})
 	if got := selectDivergences(r, verifiedLedger(r, "evidence-2"), []model.Divergence{observationEntry("evidence-2")}); len(got) != 0 {
 		t.Errorf("duplicated check kept %+v", got)
+	}
+	// Rows without a test or key are dropped one by one; the entry keeps the rest.
+	r = divergenceFixture()
+	mixed := observationEntry("evidence-2")
+	mixed.Observations = append(mixed.Observations, model.Observation{Key: "k", Status: model.ObservationDiverged}, model.Observation{Test: "TestDiscount", Status: model.ObservationDiverged})
+	got := selectDivergences(r, verifiedLedger(r, "evidence-2"), []model.Divergence{mixed})
+	if len(got) != 1 || len(got[0].Observations) != 1 || got[0].Observations[0].Key != "Discount(5,33)" {
+		t.Errorf("rows without a test or key were kept: %+v", got)
 	}
 }
 
@@ -168,7 +192,7 @@ func TestSelectDivergencesAnchorsAndCitingHypotheses(t *testing.T) {
 	unanchored := observationEntry("evidence-4")
 	unanchored.CheckIDs = []string{"check-1", "check-2", "check-8"}
 	r.Hypotheses[3].Path = "calc/gone.go"
-	got := selectDivergences(r, l, []model.Divergence{preset, unanchored, fuzzEntry("evidence-1")})
+	got := linkDivergences(r, selectDivergences(r, l, []model.Divergence{preset, unanchored, fuzzEntry("evidence-1")}))
 	if len(got) != 3 {
 		t.Fatalf("entries %+v", got)
 	}
@@ -184,6 +208,59 @@ func TestSelectDivergencesAnchorsAndCitingHypotheses(t *testing.T) {
 	}
 	if other.Path != "" || other.Line != 0 || other.AnchorSource != "" || strings.Join(other.HypothesisIDs, ",") != "h-other" {
 		t.Fatalf("an entry cited only from a deleted file must stay unanchored: %+v", other)
+	}
+	// A fuzz anchor must also name a changed, non-deleted file.
+	for _, path := range []string{"calc/gone.go", "calc/untouched.go"} {
+		d := fuzzEntry("evidence-1")
+		d.Path = path
+		got := selectDivergences(r, l, []model.Divergence{d})
+		if len(got) != 1 || got[0].Path != "" || got[0].Line != 0 || got[0].Symbol != "" || got[0].AnchorSource != "" {
+			t.Fatalf("fuzz entry anchored at %s: %+v", path, got)
+		}
+	}
+	// selectDivergences alone cites no hypothesis: linking happens once the
+	// statuses are final.
+	if got := selectDivergences(r, l, []model.Divergence{observationEntry("evidence-2")}); len(got) != 1 || len(got[0].HypothesisIDs) != 0 || got[0].Path != "" {
+		t.Fatalf("selectDivergences linked hypotheses: %+v", got)
+	}
+}
+
+// A DIVERGED claim is accepted only when an entry it cites is listed in
+// Behavior Divergences, so the Investigation Summary and that section agree.
+func TestDivergedClaimNeedsAListedDivergence(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		feed func(*model.Report, *ledger) []model.Divergence
+		want string
+	}{
+		{"listed", func(r *model.Report, l *ledger) []model.Divergence {
+			return selectDivergences(r, l, []model.Divergence{observationEntry("evidence-2")})
+		}, model.StatusDiverged},
+		{"feed without an entry", noDivergences, model.StatusUnverified},
+		{"entry rejected by selection", func(r *model.Report, l *ledger) []model.Divergence {
+			d := observationEntry("evidence-2")
+			d.CheckIDs = d.CheckIDs[:2]
+			return selectDivergences(r, l, []model.Divergence{d})
+		}, model.StatusUnverified},
+		{"only another entry listed", func(r *model.Report, l *ledger) []model.Divergence {
+			return selectDivergences(r, l, []model.Divergence{fuzzEntry("evidence-1")})
+		}, model.StatusUnverified},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			r := divergenceFixture()
+			r.Hypotheses = []model.Hypothesis{{ID: "h1", Title: "Discount changed", Severity: "high", Status: "DIVERGED", EvidenceIDs: []string{"evidence-2"}, Path: "calc/calc.go", Line: 12}}
+			concludeFresh(r, verifiedLedger(r, "evidence-1", "evidence-2"), true, tt.feed)
+			if got := r.Hypotheses[0].Status; got != tt.want {
+				t.Fatalf("status %s, want %s", got, tt.want)
+			}
+			cited := false
+			for _, d := range r.Divergences {
+				cited = cited || strings.Join(d.HypothesisIDs, ",") == "h1"
+			}
+			if cited != (tt.want == model.StatusDiverged) || r.ExitCode != 2 {
+				t.Fatalf("divergences %+v exit %d", r.Divergences, r.ExitCode)
+			}
+		})
 	}
 }
 
@@ -225,14 +302,38 @@ func TestWriteDivergencesEmptyTexts(t *testing.T) {
 	if got := strings.TrimSpace(section(t, md, "## Behavior Divergences")); got != noExperimentText {
 		t.Fatalf("empty report: %q", got)
 	}
+	render := func(r *model.Report, verified map[string]string) string {
+		var b bytes.Buffer
+		writeDivergences(&b, r, verified)
+		return strings.TrimSpace(strings.TrimPrefix(b.String(), "\n## Behavior Divergences\n"))
+	}
 	for _, kind := range []string{model.EvidenceDifferentialObservation, model.EvidenceDifferentialFuzz} {
 		r := &model.Report{Evidence: []model.Evidence{{ID: "evidence-1", Kind: kind, Status: model.StatusNotDiverged}}}
-		if got := strings.TrimSpace(section(t, string(Markdown(r)), "## Behavior Divergences")); got != noDivergenceText {
-			t.Fatalf("%s without divergence: %q", kind, got)
+		// Equal values are claimed only for an accepted NOT_DIVERGED status.
+		if got := render(r, map[string]string{"evidence-1": model.StatusNotDiverged}); got != noDivergenceText {
+			t.Fatalf("%s with an accepted NOT_DIVERGED: %q", kind, got)
+		}
+		unvalidated := fmt.Sprintf(unvalidatedText, 1, 1)
+		if got := render(r, nil); got != unvalidated {
+			t.Fatalf("%s whose stored NOT_DIVERGED was not accepted: %q", kind, got)
+		}
+		// Markdown re-derives the statuses: the F0 stub verifiers accept none.
+		if got := strings.TrimSpace(section(t, string(Markdown(r)), "## Behavior Divergences")); got != unvalidated {
+			t.Fatalf("%s rendered through Markdown: %q", kind, got)
 		}
 	}
+	// One accepted and two unaccepted records: nothing is said about equal values.
+	r := &model.Report{Evidence: []model.Evidence{
+		{ID: "evidence-1", Kind: model.EvidenceDifferentialObservation, Status: model.StatusNotDiverged},
+		{ID: "evidence-2", Kind: model.EvidenceDifferentialFuzz, Status: model.StatusUnverified},
+		{ID: "evidence-3", Kind: model.EvidenceDifferentialObservation, Status: model.StatusDiverged},
+		{ID: "evidence-4", Kind: model.EvidenceDifferentialTest, Status: model.StatusNotReproduced},
+	}}
+	if got := render(r, map[string]string{"evidence-1": model.StatusNotDiverged, "evidence-4": model.StatusNotReproduced}); got != fmt.Sprintf(unvalidatedText, 2, 3) {
+		t.Fatalf("mixed records: %q", got)
+	}
 	// Other evidence kinds are not experiments of this section.
-	r := &model.Report{Evidence: []model.Evidence{{ID: "evidence-1", Kind: model.EvidenceDifferentialTest, Status: model.StatusNotReproduced}}}
+	r = &model.Report{Evidence: []model.Evidence{{ID: "evidence-1", Kind: model.EvidenceDifferentialTest, Status: model.StatusNotReproduced}}}
 	if got := strings.TrimSpace(section(t, string(Markdown(r)), "## Behavior Divergences")); got != noExperimentText {
 		t.Fatalf("differential_test only: %q", got)
 	}

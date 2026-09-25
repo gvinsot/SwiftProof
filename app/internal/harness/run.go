@@ -47,7 +47,9 @@ const (
 const (
 	budgetExhaustedText = "Sandbox runtime budget exhausted."
 	budgetReservedText  = "Sandbox runtime reserved for reviewer experiments."
-	deadlineText        = "Overall deadline reached; the run was not started."
+	// deadlineText names both limits a run context can carry: the overall
+	// --deadline and, for reviewer experiments, the reviewer time limit.
+	deadlineText = "Deadline reached before the run started (the overall --deadline or the reviewer time limit); the run was not started."
 )
 
 // auditExecutionCache is the audit tool name of a replayed baseline run.
@@ -151,9 +153,9 @@ func (h *Harness) runWithOptions(ctx context.Context, kind, dir string, command 
 			c.Status = "PASS"
 		case result.ExitCode >= 125:
 			c.Status = "ERROR"
-		case strings.HasPrefix(kind, "generated_test_") && generatedSetupFailure(c.Output):
+		case logDecidesError(kind) && strings.HasPrefix(kind, "generated_test_") && generatedSetupFailure(c.Output):
 			c.Status = "ERROR"
-		case strings.Contains(c.Output, "fork/exec ") && (strings.Contains(c.Output, "permission denied") || strings.Contains(c.Output, "exec format error") || strings.Contains(c.Output, "no such file or directory")):
+		case logDecidesError(kind) && strings.Contains(c.Output, "fork/exec ") && (strings.Contains(c.Output, "permission denied") || strings.Contains(c.Output, "exec format error") || strings.Contains(c.Output, "no such file or directory")):
 			c.Status = "ERROR"
 		default:
 			c.Status = "FAIL"
@@ -186,6 +188,26 @@ func (h *Harness) runWithOptions(ctx context.Context, kind, dir string, command 
 		return c, nil, false
 	}
 	return c, data, truncated
+}
+
+// logDecidesError reports whether the text of a failed run's log may turn the
+// run into ERROR through the inherited v0.2 rules (a setup-failure marker in a
+// generated_test_* log, or a fork/exec failure line in any log). It holds for
+// the v0.2 kinds, for generated_test_intent (whose setup failures stay ERROR,
+// §1.17) and for the baseline-side v0.4 kinds, whose logs candidate code does
+// not write. It is false for the candidate-side v0.4 kinds and for any kind
+// not listed: candidate code writes their logs, so for them ERROR comes only
+// from an infrastructure cause (a Docker or executor error, exit code 125 or
+// above, a lost log artifact) and a compile, setup or run failure stays FAIL.
+// Candidate content can then never force exit 4 through them (§1.17).
+func logDecidesError(kind string) bool {
+	switch kind {
+	case model.CheckTest, model.CheckTypecheck, model.CheckBuild, model.CheckCoverage, model.CheckExistingTest,
+		model.CheckGeneratedBase, model.CheckGeneratedCandidate, model.CheckGeneratedIntent, model.CheckGeneratedBaseRepeat,
+		model.CheckFuzzBase, model.CheckFuzzBaseConfirm, model.CheckBaseTestBase, model.CheckImpactedTestBase:
+		return true
+	}
+	return false
 }
 
 // ledgerFor resolves runOptions.ledger. An unknown name is recorded as an

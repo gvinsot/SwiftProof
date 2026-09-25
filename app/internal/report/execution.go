@@ -15,8 +15,9 @@ import (
 // changes a status or the exit code (F7a).
 func finalizeExecution(r *model.Report, l *ledger) {}
 
-// cacheNote returns the indented note rendered under a stored or replayed
-// check in "## Automated Checks", or "" (F7a).
+// cacheNote returns the note rendered under a stored or replayed check in
+// "## Automated Checks", or "" (F7a). It returns plain, unescaped text:
+// renderMarkdown indents it and passes it through inline().
 func cacheNote(c model.Check) string {
 	return ""
 }
