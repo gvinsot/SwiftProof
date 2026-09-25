@@ -357,38 +357,32 @@ func (r *Repository) ReadFile(ctx context.Context, commit, file string) ([]byte,
 // Snapshot exports regular tracked files into an empty directory. Symlinks and
 // submodules are rejected, as are files >512 MiB and snapshots >2 GiB. Git archive
 // export-ignore/export-subst attributes are deliberately bypassed via tree blobs.
+// It lists the commit with Tree and streams the blobs with ReadBlobs.
 func (r *Repository) Snapshot(ctx context.Context, commit, dest string) error {
 	if !validObjectID(commit) {
 		return errors.New("Snapshot requires a resolved commit identifier")
 	}
-	listing, err := r.git(ctx, maxGitOutput, "ls-tree", "-r", "-z", commit)
+	tree, err := r.Tree(ctx, commit)
 	if err != nil {
+		if errors.Is(err, ErrLimit) {
+			return fmt.Errorf("snapshot contains over %d tracked files: %w", maxTreeEntries, ErrLimit)
+		}
 		return err
-	}
-	if bytes.Count(listing, []byte{0}) > maxTreeEntries {
-		return fmt.Errorf("snapshot contains over %d tracked files: %w", maxTreeEntries, ErrLimit)
 	}
 	type entry struct {
 		name, oid  string
 		executable bool
+		size       int64
 	}
 	var entries []entry
-	for _, record := range bytes.Split(listing, []byte{0}) {
-		if len(record) == 0 {
-			continue
-		}
-		header, name, ok := strings.Cut(string(record), "\t")
-		parts := strings.Fields(header)
-		if !ok || len(parts) != 3 || !validObjectID(parts[2]) {
-			return errors.New("invalid Git tree metadata")
-		}
-		if err = SafePath(name); err != nil {
+	for _, e := range tree {
+		if err = SafePath(e.Path); err != nil {
 			return err
 		}
-		if parts[1] != "blob" || parts[0] != "100644" && parts[0] != "100755" {
-			return fmt.Errorf("snapshot rejects symlink, submodule, or unsupported mode %s at %q", parts[0], name)
+		if e.Type != "blob" || e.Mode != "100644" && e.Mode != "100755" {
+			return fmt.Errorf("snapshot rejects symlink, submodule, or unsupported mode %s at %q", e.Mode, e.Path)
 		}
-		entries = append(entries, entry{name, parts[2], parts[0] == "100755"})
+		entries = append(entries, entry{e.Path, e.OID, e.Mode == "100755", e.Size})
 	}
 	abs, err := filepath.Abs(dest)
 	if err != nil {
@@ -417,75 +411,47 @@ func (r *Repository) Snapshot(ctx context.Context, commit, dest string) error {
 	if len(entries) == 0 {
 		return nil
 	}
-	// cat-file --batch streams the exact blobs, honoring neither checkout filters
-	// nor export attributes. Feeding object IDs also handles newlines in filenames.
-	c := r.command(ctx, "cat-file", "--batch")
-	var requests strings.Builder
-	for _, e := range entries {
-		requests.WriteString(e.oid)
-		requests.WriteByte('\n')
-	}
-	c.Stdin = strings.NewReader(requests.String())
-	stderr := &limitedBuffer{limit: 8192}
-	c.Stderr = stderr
-	stdout, err := c.StdoutPipe()
-	if err != nil {
-		return err
-	}
-	if err = c.Start(); err != nil {
-		return err
-	}
-	complete := false
-	defer func() {
-		if !complete {
-			_ = c.Process.Kill()
-			_ = c.Wait()
-		}
-	}()
-	reader := newBlobReader(stdout)
+	// The listed sizes bound the export before any content is read; the stream
+	// must then deliver exactly those sizes.
 	var total int64
-	for _, e := range entries {
-		size, readErr := reader.header(e.oid)
-		if readErr != nil {
-			return readErr
-		}
-		if size > maxSnapshotFile || size > maxSnapshotBytes-total {
+	oids := make([]string, len(entries))
+	for i, e := range entries {
+		if e.size > maxSnapshotFile || e.size > maxSnapshotBytes-total {
 			return fmt.Errorf("snapshot %q: %w", e.name, ErrLimit)
 		}
-		total += size
+		total += e.size
+		oids[i] = e.oid
+	}
+	next := 0
+	err = r.ReadBlobs(ctx, oids, maxSnapshotFile, func(oid string, data []byte) error {
+		e := entries[next]
+		next++
+		if oid != e.oid || int64(len(data)) != e.size {
+			return errors.New("Git blob stream does not match the tree listing")
+		}
 		target := filepath.Join(abs, filepath.FromSlash(e.name))
-		if err = os.MkdirAll(filepath.Dir(target), 0700); err != nil {
+		if err := os.MkdirAll(filepath.Dir(target), 0700); err != nil {
 			return err
 		}
 		mode := os.FileMode(0600)
 		if e.executable {
 			mode = 0700
 		}
-		f, eopen := os.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_EXCL, mode)
-		if eopen != nil {
-			return eopen
-		}
-		_, copyErr := io.CopyN(f, reader, size)
-		closeErr := f.Close()
-		if copyErr != nil {
-			return copyErr
-		}
-		if closeErr != nil {
-			return closeErr
-		}
-		if err = reader.separator(); err != nil {
+		f, err := os.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_EXCL, mode)
+		if err != nil {
 			return err
 		}
-	}
-	err = c.Wait()
-	complete = true
-	if ctx.Err() != nil {
+		_, writeErr := f.Write(data)
+		closeErr := f.Close()
+		if writeErr != nil {
+			return writeErr
+		}
+		return closeErr
+	})
+	if err != nil && ctx.Err() != nil {
 		return ctx.Err()
 	}
-	if err != nil {
-		return fmt.Errorf("snapshot: %w: %s", err, stderr.String())
-	}
-	return nil
+	return err
 }
 
 type blobReader struct{ *bufio.Reader }

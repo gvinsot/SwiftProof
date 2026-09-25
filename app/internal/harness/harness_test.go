@@ -677,7 +677,7 @@ func TestTruncatedCoveragePayloadYieldsNoProfile(t *testing.T) {
 			h.opts.MaxOutputBytes = 256
 			h.opts.Commands[coverage.CommandKey] = goCoverageCommand()
 			h.executeCapture = func(_ context.Context, _ string, _ []string, _, payload io.Writer) execution {
-				fmt.Fprint(payload, tc.frame(coverageLimit(h.opts.MaxOutputBytes)))
+				fmt.Fprint(payload, tc.frame(PayloadLimit(h.opts.MaxOutputBytes)))
 				return execution{ExitCode: 0}
 			}
 			c, profile, sha, reason := h.RunCoverage(context.Background())
@@ -845,7 +845,7 @@ func TestCoverageLimitDerivation(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := coverageLimit(tc.maxOutput)
+			got := PayloadLimit(tc.maxOutput)
 			if got != tc.want {
 				t.Fatalf("coverage budget for max_output_bytes=%d is %d, want %d", tc.maxOutput, got, tc.want)
 			}

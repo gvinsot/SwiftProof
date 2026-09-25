@@ -25,6 +25,7 @@ import (
 	"github.com/gvinsot/SwiftProof/app/internal/config"
 	"github.com/gvinsot/SwiftProof/app/internal/coverage"
 	"github.com/gvinsot/SwiftProof/app/internal/model"
+	"github.com/gvinsot/SwiftProof/app/internal/redact"
 )
 
 const maxFileBytes = 1024 * 1024
@@ -37,12 +38,28 @@ type Options struct {
 	Network                                           bool
 	Timeout, MaxRuntime                               time.Duration
 	MaxGeneratedTests, MaxOutputBytes, MemoryMB, CPUs int
+	// IntentCriteria are the acceptance criteria extracted from the intent (F5).
+	IntentCriteria []model.IntentCriterion
+	// Symbols is the static symbol index the find_* tools consult first (F6a).
+	Symbols SymbolIndex
+	// Cache is the opt-in baseline execution cache (F7a); nil means no cache.
+	Cache ExecutionCache
+	// Parallel is the requested number of concurrent initial checks, 0..4 (F7b).
+	Parallel int
+	// ReviewerReserve is the part of MaxRuntime the pre-reviewer v0.4 stages
+	// leave to reviewer experiments (§1.7.1); 0 when no reviewer runs.
+	ReviewerReserve time.Duration
 }
 
 type generatedTest struct {
 	ID, Path, Content, Description string
-	Reproduced                     bool
-	GoTests, JSTests               []string
+	// Reproduced marks a test retained as evidence: a reproducer, a diverging
+	// observation test (F1) or a failing intent test (F5). It is never deleted.
+	Reproduced       bool
+	GoTests, JSTests []string
+	// Criterion is the acceptance criterion of an intent test (F5 only); such a
+	// test runs on the candidate only.
+	Criterion string
 }
 
 type execution struct {
@@ -62,15 +79,29 @@ type Harness struct {
 	root, candidate, base string
 	runID                 string
 	checks                []model.Check
+	mutationChecks        []model.Check // separate ledger: "mutation-check-N" (F4)
 	evidence              []model.Evidence
 	artifacts             []model.Artifact
 	audit                 []model.AuditEvent
 	tests                 map[string]*generatedTest
 	generated             int
-	spent                 time.Duration
+	spent                 time.Duration // charged runtime of completed runs (§1.7.1)
+	reserved              time.Duration // timeouts reserved by runs in flight
+	resultsBytes          int           // total len(Check.Results) over both ledgers
 	closed                bool
 	execute               executor
 	executeCapture        captureExecutor
+	// cacheCounts holds the execution-cache counters the harness observes
+	// itself (run.go); the summary adds ExecutionCache.Stats().
+	cacheCounts model.ExecutionCache
+	// Per-feature state; each type lives in its owner's file.
+	exec      execState     // cache.go (F7a)
+	intent    intentState   // intent.go (F5)
+	observe   observeState  // observations.go (F1)
+	fuzz      fuzzState     // fuzzrun.go (F2)
+	baseTests baseTestState // basetests.go (F3)
+	impacted  impactedState // impacted.go (F6b)
+	mutation  mutationState // mutation.go (F4)
 }
 
 func New(opts Options) (*Harness, error) {
@@ -92,7 +123,7 @@ func New(opts Options) (*Harness, error) {
 	if opts.CPUs == 0 {
 		opts.CPUs = 2
 	}
-	if opts.Timeout < 0 || opts.MaxRuntime < 0 || opts.MaxGeneratedTests < 0 || opts.MaxGeneratedTests > 100 || opts.MaxOutputBytes < 256 || opts.MaxOutputBytes > 4*1024*1024 || opts.MemoryMB < 64 || opts.MemoryMB > 65536 || opts.CPUs < 1 || opts.CPUs > 128 {
+	if opts.Timeout < 0 || opts.MaxRuntime < 0 || opts.MaxGeneratedTests < 0 || opts.MaxGeneratedTests > 100 || opts.MaxOutputBytes < 256 || opts.MaxOutputBytes > 4*1024*1024 || opts.MemoryMB < 64 || opts.MemoryMB > 65536 || opts.CPUs < 1 || opts.CPUs > 128 || opts.ReviewerReserve < 0 || opts.ReviewerReserve > opts.MaxRuntime {
 		return nil, errors.New("invalid harness resource limits")
 	}
 	if strings.ContainsAny(opts.Image, "\r\n\t ") || strings.HasPrefix(opts.Image, "-") {
@@ -111,11 +142,16 @@ func New(opts Options) (*Harness, error) {
 		commands[k] = append([]string(nil), v...)
 	}
 	opts.Commands = commands
+	opts.IntentCriteria = append([]model.IntentCriterion(nil), opts.IntentCriteria...)
+	state, err := newExecState(opts)
+	if err != nil {
+		return nil, err
+	}
 	root, err := os.MkdirTemp("", "swiftproof-harness-")
 	if err != nil {
 		return nil, err
 	}
-	h := &Harness{opts: opts, root: root, candidate: filepath.Join(root, "candidate"), runID: randomID(), tests: map[string]*generatedTest{}, execute: dockerExecute, executeCapture: dockerExecuteCapture}
+	h := &Harness{opts: opts, root: root, candidate: filepath.Join(root, "candidate"), runID: randomID(), tests: map[string]*generatedTest{}, execute: dockerExecute, executeCapture: dockerExecuteCapture, exec: state}
 	if err = copySnapshot(opts.CandidateDir, h.candidate); err != nil {
 		os.RemoveAll(root)
 		return nil, fmt.Errorf("candidate snapshot: %w", err)
@@ -143,14 +179,13 @@ func (h *Harness) Close() error {
 	h.closed = true
 	return os.RemoveAll(h.root)
 }
+
+// Checks returns a deep copy of the main check ledger (Command and Cache are
+// copied too).
 func (h *Harness) Checks() []model.Check {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	checks := append([]model.Check(nil), h.checks...)
-	for i := range checks {
-		checks[i].Command = append([]string(nil), checks[i].Command...)
-	}
-	return checks
+	return copyChecks(h.checks)
 }
 func (h *Harness) Evidence() []model.Evidence {
 	h.mu.Lock()
@@ -158,6 +193,7 @@ func (h *Harness) Evidence() []model.Evidence {
 	evidence := append([]model.Evidence(nil), h.evidence...)
 	for i := range evidence {
 		evidence[i].TestNames = append([]string(nil), evidence[i].TestNames...)
+		evidence[i].ReferencedSymbols = append([]string(nil), evidence[i].ReferencedSymbols...)
 	}
 	return evidence
 }
@@ -179,98 +215,6 @@ func (h *Harness) Run(ctx context.Context, kind string) model.Check {
 	c := h.run(ctx, kind, h.candidate, h.opts.Commands[kind])
 	h.audit = append(h.audit, model.AuditEvent{Time: started.UTC(), Tool: "run_" + kind, Status: c.Status, DurationMS: time.Since(started).Milliseconds()})
 	return c
-}
-
-func (h *Harness) run(ctx context.Context, kind, dir string, command []string) model.Check {
-	c, _, _ := h.runWith(ctx, kind, dir, command, "")
-	return c
-}
-
-// runWith executes one command. When capture names an in-container file the
-// container returns that file on its own bounded payload channel; the returned
-// bytes are raw and unredacted so the payload can be parsed and hashed before
-// any display transformation touches it.
-func (h *Harness) runWith(ctx context.Context, kind, dir string, command []string, capture string) (model.Check, []byte, bool) {
-	c := model.Check{ID: fmt.Sprintf("check-%d", len(h.checks)+1), Kind: kind, Command: append([]string(nil), command...), ExitCode: -1}
-	started := time.Now()
-	var payload *boundedWriter
-	for i, arg := range c.Command {
-		c.Command[i] = Redact(arg)
-	}
-	switch {
-	case h.closed:
-		c.Status, c.Output = "ERROR", "harness is closed"
-	case len(command) == 0:
-		c.Status, c.Output = "SKIPPED", "No command configured."
-	case h.opts.Image == "":
-		c.Status, c.Output = "SKIPPED", "No Docker image configured; repository code was not executed."
-	case dir == "":
-		c.Status, c.Output = "SKIPPED", "No baseline snapshot available."
-	case h.spent >= h.opts.MaxRuntime:
-		c.Status, c.Output = "SKIPPED", "Sandbox runtime budget exhausted."
-	default:
-		timeout := h.opts.Timeout
-		if remaining := h.opts.MaxRuntime - h.spent; remaining < timeout {
-			timeout = remaining
-		}
-		runCtx, cancel := context.WithTimeout(ctx, timeout)
-		name := "swiftproof-" + randomID()
-		out := &boundedWriter{limit: h.opts.MaxOutputBytes}
-		var result execution
-		if capture != "" {
-			payload = &boundedWriter{limit: coverageLimit(h.opts.MaxOutputBytes)}
-			result = h.executeCapture(runCtx, name, h.dockerArgsScript(name, dir, captureScript(capture), command), out, payload)
-		} else {
-			result = h.execute(runCtx, name, h.dockerArgs(name, dir, command), out)
-		}
-		cancel()
-		c.ExitCode, c.Truncated, c.Output = result.ExitCode, out.truncated, Redact(string(out.data))
-		switch {
-		case result.TimedOut:
-			c.Status = "TIMEOUT"
-		case result.Err != nil:
-			c.Status = "ERROR"
-			c.Output += "\n" + Redact(result.Err.Error())
-		case result.ExitCode == 0:
-			c.Status = "PASS"
-		case result.ExitCode >= 125:
-			c.Status = "ERROR"
-		case strings.HasPrefix(kind, "generated_test_") && generatedSetupFailure(c.Output):
-			c.Status = "ERROR"
-		case strings.Contains(c.Output, "fork/exec ") && (strings.Contains(c.Output, "permission denied") || strings.Contains(c.Output, "exec format error") || strings.Contains(c.Output, "no such file or directory")):
-			c.Status = "ERROR"
-		default:
-			c.Status = "FAIL"
-		}
-		h.spent += time.Since(started)
-	}
-	c.DurationMS = time.Since(started).Milliseconds()
-	c.Output = truncateUTF8(c.Output, h.opts.MaxOutputBytes)
-	if c.Output != "" {
-		if err := h.saveArtifact(c.ID+".log", "check_output", []byte(c.Output)); err != nil {
-			c.Status = "ERROR"
-			c.Output = truncateUTF8("Unable to retain check output: "+Redact(err.Error())+"\n"+c.Output, h.opts.MaxOutputBytes)
-		}
-	}
-	h.checks = append(h.checks, c)
-	if payload == nil {
-		return c, nil, false
-	}
-	return c, payload.data, payload.truncated
-}
-
-// coverageLimit derives the payload budget from trusted policy rather than
-// introducing an unconfigurable host buffer. A real profile runs to hundreds of
-// kilobytes, far beyond a log budget.
-func coverageLimit(maxOutputBytes int) int {
-	limit := 16 * maxOutputBytes
-	if limit < 256*1024 {
-		limit = 256 * 1024
-	}
-	if limit > 4*1024*1024 {
-		limit = 4 * 1024 * 1024
-	}
-	return limit
 }
 
 // RunCoverage executes the configured coverage command and returns the recorded
@@ -437,34 +381,14 @@ func generatedSetupFailure(output string) bool {
 	return false
 }
 
-func truncateUTF8(s string, limit int) string {
-	if len(s) <= limit {
-		return strings.ToValidUTF8(s, "�")
-	}
-	s = s[:limit]
-	for len(s) > 0 && !utf8.ValidString(s) {
-		s = s[:len(s)-1]
-	}
-	return s
-}
-
-var redactRules = []*regexp.Regexp{
-	regexp.MustCompile(`(?is)-----BEGIN [A-Z ]*PRIVATE KEY-----.*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)`),
-	regexp.MustCompile(`(?i)(?:api[_-]?key|access[_-]?token|auth[_-]?token|client[_-]?secret|secret|password|passwd|authorization)["']?\s*[=:]\s*["']?[^\s,"'}]+`),
-	regexp.MustCompile(`(?i)Bearer\s+[A-Za-z0-9._~+/=-]+`),
-	regexp.MustCompile(`(?:sk-[A-Za-z0-9_-]{8,}|gh[pousr]_[A-Za-z0-9_]{8,}|github_pat_[A-Za-z0-9_]{8,}|AKIA[A-Z0-9]{16})`),
-	regexp.MustCompile(`eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}`),
-	regexp.MustCompile(`://[^\s/@:]+:[^\s/@]+@`),
-}
+// truncateUTF8 cuts s to at most limit bytes without splitting a UTF-8
+// sequence (redact.TruncateUTF8).
+func truncateUTF8(s string, limit int) string { return redact.TruncateUTF8(s, limit) }
 
 // Redact masks common credential formats before any tool output or report is emitted.
-// It is defense in depth; snapshots also exclude known secret-bearing paths.
-func Redact(s string) string {
-	for _, re := range redactRules {
-		s = re.ReplaceAllStringFunc(s, func(match string) string { return "[REDACTED]" + strings.Repeat("\n", strings.Count(match, "\n")) })
-	}
-	return s
-}
+// It is defense in depth; snapshots also exclude known secret-bearing paths. It
+// is redact.Redact, which is idempotent: every value it returns is a fixed point.
+func Redact(s string) string { return redact.Redact(s) }
 
 // IsSensitivePath identifies secret-bearing names excluded from tools and snapshots.
 func IsSensitivePath(path string) bool { return sensitivePath(path) }
@@ -594,6 +518,28 @@ func (h *Harness) saveArtifact(name, kind string, data []byte) error {
 	return nil
 }
 
+// knownTools are the names Call dispatches. Any other name is refused and
+// audited as model.AuditRejectedToolCall, so a caller-supplied name never
+// becomes an audit tool (harness stages use the reserved "stage:" prefix).
+var knownTools = map[string]bool{
+	"read_file": true, "get_diff": true, "search_code": true, "find_references": true, "inspect_symbol": true, "find_callers": true,
+	"run_tests": true, "run_test": true, "run_typecheck": true, "run_build": true,
+	"create_test": true, "run_generated_test": true, "delete_generated_test": true,
+	IntentCreateTool: true, IntentRunTool: true,
+}
+
+// cleanToolName is the bounded, printable, redacted form of a requested tool
+// name recorded in a rejected_tool_call audit event.
+func cleanToolName(name string) string {
+	name = strings.Map(func(r rune) rune {
+		if r < ' ' || r == 0x7f {
+			return -1
+		}
+		return r
+	}, name)
+	return truncateUTF8(Redact(name), 128)
+}
+
 // Call accepts only the published tools; arbitrary commands and environment variables
 // are never accepted from a reviewer. All calls, including rejected calls, are audited.
 func (h *Harness) Call(ctx context.Context, tool string, args json.RawMessage) (out json.RawMessage, err error) {
@@ -606,7 +552,7 @@ func (h *Harness) Call(ctx context.Context, tool string, args json.RawMessage) (
 			status = "ERROR"
 		}
 		auditArgs := string(args)
-		if tool == "create_test" {
+		if tool == "create_test" || tool == IntentCreateTool {
 			var a map[string]any
 			if json.Unmarshal(args, &a) == nil {
 				delete(a, "content")
@@ -614,7 +560,13 @@ func (h *Harness) Call(ctx context.Context, tool string, args json.RawMessage) (
 				auditArgs = string(b)
 			}
 		}
-		h.audit = append(h.audit, model.AuditEvent{Time: started.UTC(), Tool: tool, Arguments: truncateUTF8(Redact(auditArgs), 4096), Status: status, DurationMS: time.Since(started).Milliseconds()})
+		auditTool := tool
+		if !knownTools[tool] {
+			auditTool = model.AuditRejectedToolCall
+			b, _ := json.Marshal(map[string]string{"requested_tool": cleanToolName(tool), "arguments": truncateUTF8(Redact(auditArgs), 3072)})
+			auditArgs = string(b)
+		}
+		h.audit = append(h.audit, model.AuditEvent{Time: started.UTC(), Tool: auditTool, Arguments: truncateUTF8(Redact(auditArgs), 4096), Status: status, DurationMS: time.Since(started).Milliseconds()})
 	}()
 	if h.closed {
 		return nil, errors.New("harness is closed")
@@ -634,6 +586,8 @@ func (h *Harness) Call(ctx context.Context, tool string, args json.RawMessage) (
 		Content     string `json:"content"`
 		Description string `json:"description"`
 		TestID      string `json:"test_id"`
+		CriterionID string `json:"criterion_id"`
+		Depth       int    `json:"depth"`
 	}
 	if len(args) == 0 {
 		args = []byte("{}")
@@ -646,14 +600,19 @@ func (h *Harness) Call(ctx context.Context, tool string, args json.RawMessage) (
 	if decoder.Decode(new(any)) != io.EOF {
 		return nil, errors.New("tool arguments must contain one JSON object")
 	}
+	if a.CriterionID != "" && tool != IntentCreateTool {
+		return nil, errors.New("criterion_id is accepted only by create_intent_test")
+	}
+	if a.Depth != 0 && tool != "find_callers" {
+		return nil, errors.New("depth is accepted only by find_callers")
+	}
 	var value any
 	switch tool {
 	case "read_file":
 		value, err = h.readFile(a.Path, a.Start, a.End)
 		if err == nil {
 			observation := value.(map[string]any)
-			e := model.Evidence{ID: fmt.Sprintf("evidence-%d", len(h.evidence)+1), Kind: "source_observation", Description: fmt.Sprintf("Candidate source lines %v-%v", observation["start"], observation["end"]), Path: a.Path, Output: observation["content"].(string), Status: "OBSERVED"}
-			h.evidence = append(h.evidence, e)
+			e := h.appendEvidence(model.Evidence{Kind: model.EvidenceSourceObservation, Description: fmt.Sprintf("Candidate source lines %v-%v", observation["start"], observation["end"]), Path: a.Path, Output: observation["content"].(string), Status: model.StatusObserved})
 			observation["evidence_id"] = e.ID
 		}
 	case "get_diff":
@@ -680,8 +639,8 @@ func (h *Harness) Call(ctx context.Context, tool string, args json.RawMessage) (
 		value = map[string]any{"diff": truncateUTF8(diff, h.opts.MaxOutputBytes), "truncated": len(diff) > h.opts.MaxOutputBytes}
 	case "search_code":
 		value, err = h.search(ctx, a.Query, false)
-	case "find_references", "inspect_symbol":
-		value, err = h.search(ctx, a.Symbol, true)
+	case "find_references", "inspect_symbol", "find_callers":
+		value, err = h.symbolTool(ctx, tool, a.Symbol, a.Depth)
 	case "run_tests":
 		value = h.run(ctx, "test", h.candidate, h.opts.Commands["test"])
 	case "run_test":
@@ -708,7 +667,7 @@ func (h *Harness) Call(ctx context.Context, tool string, args json.RawMessage) (
 			}
 			command = selectGoTests(command, names)
 		}
-		value = h.run(ctx, "existing_test", h.candidate, command)
+		value = h.run(ctx, model.CheckExistingTest, h.candidate, command)
 	case "run_typecheck":
 		value = h.run(ctx, "typecheck", h.candidate, h.opts.Commands["typecheck"])
 	case "run_build":
@@ -717,12 +676,16 @@ func (h *Harness) Call(ctx context.Context, tool string, args json.RawMessage) (
 		value, err = h.createTest(a.Path, a.Content, a.Description)
 	case "run_generated_test":
 		value, err = h.runGenerated(ctx, a.TestID)
+	case IntentCreateTool:
+		value, err = h.createIntentTest(a.CriterionID, a.Path, a.Content, a.Description)
+	case IntentRunTool:
+		value, err = h.runIntentTest(ctx, a.TestID)
 	case "delete_generated_test":
 		t, ok := h.tests[a.TestID]
 		if !ok {
 			err = errors.New("unknown generated test")
 		} else if t.Reproduced {
-			err = errors.New("reproducing tests are retained as evidence")
+			err = errors.New("tests that reproduced an issue, recorded a divergence or failed as an intent test are retained as evidence")
 		} else {
 			delete(h.tests, a.TestID)
 			value = map[string]any{"deleted": a.TestID}
@@ -982,58 +945,32 @@ func (h *Harness) runGenerated(ctx context.Context, id string) (any, error) {
 	if !ok {
 		return nil, errors.New("unknown generated test")
 	}
+	if t.Criterion != "" {
+		return nil, errors.New("intent tests run on the candidate only; use run_intent_test")
+	}
 	command := h.testCommand(t.Path)
 	hasFile := len(command) > 0
 	goRunner := len(t.GoTests) > 0 && len(command) > 0 && verifiableGoTemplate(h.opts.Commands["generated_test"])
 	if goRunner {
 		command = selectGoTests(command, t.GoTests)
 	}
-	cleanup := []string{}
-	createdDirs := []string{}
+	// The generated file stays staged in both snapshots until this function
+	// returns, so every run below (and observeGenerated) sees it.
+	var cleanups []func()
 	defer func() {
-		for _, path := range cleanup {
-			_ = os.Remove(path)
-		}
-		for i := len(createdDirs) - 1; i >= 0; i-- {
-			_ = os.Remove(createdDirs[i])
+		for i := len(cleanups) - 1; i >= 0; i-- {
+			cleanups[i]()
 		}
 	}()
 	for _, root := range []string{h.base, h.candidate} {
 		if root == "" {
 			continue
 		}
-		path, err := safePath(root, t.Path)
+		cleanup, err := stageEphemeral(root, t.Path, t.Content)
 		if err != nil {
 			return nil, err
 		}
-		var missing []string
-		for dir := filepath.Dir(path); dir != root; dir = filepath.Dir(dir) {
-			if _, e := os.Lstat(dir); e == nil {
-				break
-			} else if !os.IsNotExist(e) {
-				return nil, e
-			}
-			missing = append(missing, dir)
-		}
-		if err = os.MkdirAll(filepath.Dir(path), 0755); err != nil {
-			return nil, err
-		}
-		for i := len(missing) - 1; i >= 0; i-- {
-			createdDirs = append(createdDirs, missing[i])
-		}
-		f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0644)
-		if err != nil {
-			return nil, err
-		}
-		cleanup = append(cleanup, path)
-		_, writeErr := f.WriteString(t.Content)
-		closeErr := f.Close()
-		if writeErr != nil {
-			return nil, writeErr
-		}
-		if closeErr != nil {
-			return nil, closeErr
-		}
+		cleanups = append(cleanups, cleanup)
 	}
 	runner, names := "", []string(nil)
 	switch {
@@ -1044,32 +981,33 @@ func (h *Harness) runGenerated(ctx context.Context, id string) (any, error) {
 	}
 	var base, candidate model.Check
 	if runner == RunnerJest {
-		base = h.runWithResults(ctx, "generated_test_base", h.base, command)
-		candidate = h.runWithResults(ctx, "generated_test_candidate", h.candidate, command)
+		base = h.runWithResultsOptions(ctx, model.CheckGeneratedBase, h.base, command, runOptions{})
+		candidate = h.runWithResultsOptions(ctx, model.CheckGeneratedCandidate, h.candidate, command, runOptions{})
 	} else {
-		base = h.run(ctx, "generated_test_base", h.base, command)
-		candidate = h.run(ctx, "generated_test_candidate", h.candidate, command)
+		base, _, _ = h.runWithOptions(ctx, model.CheckGeneratedBase, h.base, command, runOptions{})
+		candidate, _, _ = h.runWithOptions(ctx, model.CheckGeneratedCandidate, h.candidate, command, runOptions{})
 	}
 	if runner != "" {
 		base, _ = ValidateExecution(runner, base, t.Path, names)
 		candidate, _ = ValidateExecution(runner, candidate, t.Path, names)
-		h.checks[len(h.checks)-2] = base
-		h.checks[len(h.checks)-1] = candidate
+		h.replaceCheck(base)
+		h.replaceCheck(candidate)
 	}
-	status := "UNVERIFIED"
-	if runner != "" && base.Status == "PASS" && candidate.Status == "FAIL" {
-		status = "REPRODUCED"
+	status := differentialStatus(runner, base, candidate)
+	confirmNote := ""
+	if status == model.StatusReproduced && base.Replayed() {
+		// Re-runs CheckGeneratedBase with runOptions{live: true} (same kind, same
+		// staged file), validates it, and returns the live check. The replayed
+		// check stays in the ledger.
+		base, status, confirmNote = h.confirmBaseline(ctx, runner, t.Path, names, command, base)
 	}
-	if runner != "" && base.Status == "PASS" && candidate.Status == "PASS" {
-		status = "NOT_REPRODUCED"
-	}
-	if status == "REPRODUCED" && !t.Reproduced {
-		if err := h.saveArtifact(t.ID+"-"+filepath.Base(t.Path), "generated_test", []byte(t.Content)); err != nil {
+	if status == model.StatusReproduced && !t.Reproduced {
+		if err := h.saveArtifact(t.ID+"-"+filepath.Base(t.Path), model.ArtifactGeneratedTest, []byte(t.Content)); err != nil {
 			return nil, fmt.Errorf("persist reproducer: %w", err)
 		}
 		t.Reproduced = true
 	}
-	e := model.Evidence{ID: fmt.Sprintf("evidence-%d", len(h.evidence)+1), Kind: "differential_test", Description: t.Description, Path: t.Path, CheckID: candidate.ID, BaseCheckID: base.ID, Status: status}
+	e := model.Evidence{Kind: model.EvidenceDifferentialTest, Description: t.Description, Path: t.Path, CheckID: candidate.ID, BaseCheckID: base.ID, Status: status}
 	if runner != "" {
 		e.Runner = runner
 		e.TestNames = append([]string(nil), names...)
@@ -1079,11 +1017,31 @@ func (h *Harness) runGenerated(ctx context.Context, id string) (any, error) {
 	} else if runner == "" {
 		e.Description += " (runner has no supported named-test execution verifier; outcome is inconclusive)"
 	}
-	if runner != "" && status == "UNVERIFIED" {
+	if runner != "" && status == model.StatusUnverified {
 		e.Description += " (the generated named test must execute on both revisions; setup failures, skips, truncated output, and unrelated suite failures are inconclusive)"
 	}
-	h.evidence = append(h.evidence, e)
-	return map[string]any{"evidence": e, "base_check": base, "candidate_check": candidate}, nil
+	e.Description += confirmNote
+	e = h.appendEvidence(e)
+	result := map[string]any{"evidence": e, "base_check": base, "candidate_check": candidate}
+	if o := h.observeGenerated(ctx, t, runner, command, names, base, candidate); o != nil {
+		result["observation"] = o
+	}
+	return result, nil
+}
+
+// differentialStatus is the v0.2 differential rule for one generated test: a
+// verified named execution that passed on the baseline and failed on the
+// candidate is REPRODUCED, one that passed on both is NOT_REPRODUCED, and
+// everything else is UNVERIFIED. It does not look at Replayed(): runGenerated
+// and report.Finalize apply the live-baseline rule.
+func differentialStatus(runner string, base, candidate model.Check) string {
+	switch {
+	case runner != "" && base.Status == "PASS" && candidate.Status == "FAIL":
+		return model.StatusReproduced
+	case runner != "" && base.Status == "PASS" && candidate.Status == "PASS":
+		return model.StatusNotReproduced
+	}
+	return model.StatusUnverified
 }
 
 func (h *Harness) testCommand(path string) []string {
@@ -1122,15 +1080,16 @@ func ToolDefinitions() []map[string]any {
 		{"read_file", "Read a bounded, redacted candidate file; paths are repository-relative.", map[string]any{"path": str("File path"), "start": map[string]any{"type": "integer", "minimum": 1}, "end": map[string]any{"type": "integer", "minimum": 1}}, []string{"path"}},
 		{"get_diff", "Read the change diff, optionally for one path.", map[string]any{"path": str("Optional file path")}, nil},
 		{"search_code", "Search a literal string in candidate source files.", map[string]any{"query": str("Literal query")}, []string{"query"}},
-		{"find_references", "Find lexical symbol occurrences; not semantic reference resolution.", map[string]any{"symbol": str("Symbol")}, []string{"symbol"}},
-		{"inspect_symbol", "Inspect lexical symbol occurrences; not semantic resolution.", map[string]any{"symbol": str("Symbol")}, []string{"symbol"}},
+		{"find_references", "Find references to a symbol. Uses a static, syntactic Go index when one is available; its answers are approximate, interface edges are possible dispatch only, and an empty result is not proof of absence. Otherwise falls back to lexical occurrences, which are not semantic resolution.", map[string]any{"symbol": str("Symbol")}, []string{"symbol"}},
+		{"inspect_symbol", "Inspect a symbol's declaration and uses. Uses a static, syntactic Go index when one is available; its answers are approximate, interface edges are possible dispatch only, and an empty result is not proof of absence. Otherwise falls back to lexical occurrences, which are not semantic resolution.", map[string]any{"symbol": str("Symbol")}, []string{"symbol"}},
+		{"find_callers", "Find functions that may call a Go symbol, following calls up to depth 3. Uses a static, syntactic Go index when one is available; its answers are approximate, interface edges are possible dispatch only, and an empty result is not proof of absence. Otherwise falls back to lexical occurrences, which are not semantic resolution.", map[string]any{"symbol": str("Symbol"), "depth": map[string]any{"type": "integer", "minimum": 1, "maximum": 3, "description": "Call depth to follow (default 1)"}}, []string{"symbol"}},
 		{"run_tests", "Run the configured existing test command in an isolated container.", map[string]any{}, nil},
 		{"run_test", "Run an existing test file using the configured test template; Go execution selects its named tests.", map[string]any{"path": str("Existing test file path")}, []string{"path"}},
 		{"run_typecheck", "Run the configured typecheck command in an isolated container.", map[string]any{}, nil},
 		{"run_build", "Run the configured build command in an isolated container.", map[string]any{}, nil},
 		{"create_test", "Create an adversarial test in an ephemeral snapshot; never overwrites source. Go files must define uniquely named TestX(t *testing.T) functions. JavaScript/TypeScript files must declare uniquely titled top-level test(\"title\", ...) or it(\"title\", ...) calls at column 0, with static titles and no describe block.", map[string]any{"path": str("New test path, e.g. pkg/swiftproof_regression_test.go"), "content": str("Exact test source"), "description": str("What behavior the test checks")}, []string{"path", "content"}},
 		{"run_generated_test", "Run identical generated tests on base and candidate. Verified Go named-test events and Jest-compatible JSON reports (Jest, Vitest) support differential conclusions; other runners remain UNVERIFIED.", map[string]any{"test_id": str("ID returned by create_test")}, []string{"test_id"}},
-		{"delete_generated_test", "Discard a generated test that has not reproduced an issue.", map[string]any{"test_id": str("Generated test ID")}, []string{"test_id"}},
+		{"delete_generated_test", "Discard a generated test that is not retained as evidence.", map[string]any{"test_id": str("Generated test ID")}, []string{"test_id"}},
 	}
 	result := make([]map[string]any, 0, len(tools))
 	for _, t := range tools {
@@ -1141,5 +1100,5 @@ func ToolDefinitions() []map[string]any {
 		}
 		result = append(result, map[string]any{"type": "function", "function": map[string]any{"name": t.name, "description": t.description, "parameters": map[string]any{"type": "object", "properties": t.properties, "required": required, "additionalProperties": false}}})
 	}
-	return result
+	return append(result, intentToolDefinitions()...)
 }
