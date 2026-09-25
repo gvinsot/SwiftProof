@@ -32,7 +32,7 @@ jobs:
       - if: runner.os == 'Linux'
         env:
           SWIFTPROOF_TEST_DOCKER_IMAGE: golang:1.26-bookworm
-        run: go test ./internal/harness ./internal/cli -run Docker -count=1 -v
+        run: go test ./... -run Docker -count=1 -v
 
   build:
     needs: test

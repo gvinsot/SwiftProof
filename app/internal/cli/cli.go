@@ -44,6 +44,19 @@ SWIFTPROOF_REVIEWER_ENDPOINT and SWIFTPROOF_REVIEWER_MODEL override that policy,
 the API key comes from the api_key_env variable or its /run/secrets/<NAME> Docker secret.
 The reviewer sends bounded, redacted source context to its configured API.
 Use --reviewer=false to disable it. Lint never calls a provider.
+
+Evidence stages (review only unless noted; policy keys fuzz, mutation and prepare
+are opt-in and need a v0.4 binary):
+  --base-tests             run baseline versions of changed Go tests on candidate code
+  --fuzz=false             skip the differential fuzzing that policy "fuzz" configures
+  --impact=false           skip the static impact index (lint and review)
+  --impacted-tests         run unchanged Go tests that statically reach changed code
+  --cache-dir DIR          opt-in baseline execution cache outside repository and output
+  --parallel N             run the initial checks N at a time (1..4)
+  --allow-prepare-network  permit network for policy "prepare" only if it enables it too
+  --deadline D             overall time limit from 1m to 24h (30s are kept for the report)
+  --format LIST            report formats: markdown,json (lint, review and report)
+  --report-url URL         link to the full report cited by the pr-comment format
 Use 'swiftproof <command> --help' for options.
 `
 
@@ -108,6 +121,10 @@ func initialize(args []string, out, errOut io.Writer) int {
 }
 
 func analyze(ctx context.Context, mode string, args []string, out, errOut io.Writer, version string) int {
+	// --deadline counts from here unless the caller recorded an earlier start.
+	if _, ok := ctx.Value(startKey{}).(time.Time); !ok {
+		ctx = withStart(ctx, time.Now())
+	}
 	f := flag.NewFlagSet(mode, flag.ContinueOnError)
 	f.SetOutput(errOut)
 	repoPath := f.String("repo", ".", "repository directory")
@@ -125,6 +142,15 @@ func analyze(ctx context.Context, mode string, args []string, out, errOut io.Wri
 	intentFile := f.String("intent-file", "", "UTF-8 file containing PR intent")
 	allowNetwork := f.Bool("allow-network", false, "permit sandbox network only if trusted policy also enables it")
 	noNetwork := f.Bool("no-network", false, "force sandbox networking off (use --reviewer=false to also disable the reviewer API)")
+	reportURL := f.String("report-url", "", "https link to the full report, cited by the pr-comment format")
+	baseTests := f.Bool("base-tests", false, "review: run the baseline versions of changed Go tests on candidate code")
+	fuzzFlag := f.Bool("fuzz", true, "review: run the differential fuzzing that trusted policy configures; --fuzz=false records it as disabled")
+	impactFlag := f.Bool("impact", true, "build the static impact index of changed Go functions (lint and review)")
+	impactedTests := f.Bool("impacted-tests", false, "review: run unchanged Go tests that statically reach changed code on baseline and candidate")
+	cacheDir := f.String("cache-dir", "", "review: opt-in baseline execution cache directory, outside the repository and the output directory")
+	parallel := f.Int("parallel", 1, "review: number of initial checks run at a time (1..4)")
+	allowPrepareNetwork := f.Bool("allow-prepare-network", false, "review: permit network for the trusted prepare container only, if policy prepare.network also enables it")
+	deadline := f.Duration("deadline", 0, "review: overall time limit from 1m to 24h; 30s of it are kept for cleanup and the report")
 	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
 		args = append(append([]string{}, args[1:]...), args[0])
 	}
@@ -133,6 +159,14 @@ func analyze(ctx context.Context, mode string, args []string, out, errOut io.Wri
 	}
 	formats, err := parseFormats(*format)
 	if err != nil {
+		return fail(errOut, 3, "%v", err)
+	}
+	opts, err := reportOptions(formats, *reportURL)
+	if err != nil {
+		return fail(errOut, 3, "%v", err)
+	}
+	explicit := visitedFlags(f)
+	if err := validateExecutionFlags(mode, explicit, execFlags{checks: *checks, baseTests: *baseTests, impact: *impactFlag, impactedTests: *impactedTests, parallel: *parallel, cacheDir: *cacheDir, deadline: *deadline}); err != nil {
 		return fail(errOut, 3, "%v", err)
 	}
 	mergeBase := !*exact
@@ -165,6 +199,10 @@ func analyze(ctx context.Context, mode string, args []string, out, errOut io.Wri
 	if len(*intent) > 65536 {
 		return fail(errOut, 3, "intent exceeds 64 KiB")
 	}
+	doc, err := parseIntent(*intent)
+	if err != nil {
+		return fail(errOut, 3, "intent: %v", err)
+	}
 	repo, err := gitrepo.Open(ctx, *repoPath)
 	if err != nil {
 		return fail(errOut, 3, "%v", err)
@@ -191,12 +229,7 @@ func analyze(ctx context.Context, mode string, args []string, out, errOut io.Wri
 	}
 	// Only trusted baseline policy (or explicit --config) can enable provider
 	// traffic. A supplied boolean flag, including false, overrides auto-selection.
-	reviewerExplicit := false
-	f.Visit(func(option *flag.Flag) {
-		if option.Name == "reviewer" {
-			reviewerExplicit = true
-		}
-	})
+	reviewerExplicit := explicit["reviewer"]
 	// Endpoint, model and credential come from the deployment: the same image
 	// and the same trusted policy are pointed at the operator's provider
 	// without a policy change. A misconfigured secret fails the run here
@@ -234,13 +267,52 @@ func analyze(ctx context.Context, mode string, args []string, out, errOut io.Wri
 	if err := validateOutput(output); err != nil {
 		return fail(errOut, 3, "%v", err)
 	}
+	// The cache directory is validated here, before dependency preparation and
+	// before any container starts; nil when --cache-dir is unset (no Docker call).
+	cache, err := openExecutionCache(repo.Root, output, *cacheDir, version, errOut)
+	if err != nil {
+		return fail(errOut, 3, "%v", err)
+	}
+	// Prepare, harness runs and the reviewer use work; static analysis,
+	// snapshots, cleanup and report writing use the parent context.
+	work, stopWork := workContext(ctx, *deadline)
+	defer stopWork()
 	signals, err := linter.Analyze(ctx, repo, change, cfg.SensitivePaths)
 	if err != nil {
 		return fail(errOut, 4, "linter: %v", err)
 	}
-	r := model.Report{Version: 1, ToolVersion: version, GeneratedAt: time.Now().UTC(), Intent: *intent, Change: change, Policy: policy, Signals: signals, Coverage: coverage.NotConfigured()}
+	signals = linter.Merge(signals, prepareSignals(cfg.Prepare, change))
+	impact, err := analyzeImpact(ctx, repo, change, *impactFlag)
+	if err != nil {
+		return fail(errOut, 4, "impact analysis: %v", err)
+	}
+	signals = linter.Merge(signals, impact.signals)
+	r := model.Report{Version: 1, ToolVersion: version, GeneratedAt: time.Now().UTC(), Intent: doc.Text, IntentSHA256: doc.SHA256, IntentCriteria: doc.Criteria, Change: change, Policy: policy, Signals: signals, Impact: impact.report, Coverage: coverage.NotConfigured()}
+	r.Unverified = append(r.Unverified, doc.Notes...)
 	operationalFailure := false
-	if mode == "review" && len(change.Files) > 0 && (*checks || *useReviewer) {
+	needExecution := mode == "review" && len(change.Files) > 0 && (*checks || *useReviewer)
+	sc := stageContext{mode: mode, checks: *checks, reason: noExecutionReason(mode, change, *checks, *useReviewer)}
+	image := cfg.Sandbox.Image
+	var prep preparation
+	if mode == "review" && cfg.Prepare != nil {
+		if needExecution {
+			executionStarted()
+			prep = runPrepare(work, repo, cfg, change, filepath.Join(output, "artifacts"), cfg.Prepare.Network && *allowPrepareNetwork && !*noNetwork, version, errOut)
+			if prep.ok {
+				image = prep.image
+			} else {
+				// No fallback to the unprepared image: nothing executes, and the
+				// run is an operational failure.
+				needExecution, operationalFailure, sc.reason = false, true, reasonPrepareFailed
+			}
+		} else {
+			prep = preparation{record: prepareNotRun(cfg, change, sc.reason)}
+		}
+		r.Prepare = prep.record
+		r.Unverified = append(r.Unverified, prep.unverified...)
+	}
+	if needExecution {
+		sc.executed = true
 		temp, err := os.MkdirTemp("", "swiftproof-")
 		if err != nil {
 			return fail(errOut, 4, "%v", err)
@@ -254,34 +326,39 @@ func analyze(ctx context.Context, mode string, args []string, out, errOut io.Wri
 			return fail(errOut, 4, "base snapshot: %v", err)
 		}
 		diffJSON, _ := json.Marshal(change)
+		executionStarted()
 		h, err := harness.New(harness.Options{
 			CandidateDir: candidateDir, BaseDir: baseDir, ArtifactDir: filepath.Join(output, "artifacts"),
-			Commands: cfg.Commands, Image: cfg.Sandbox.Image, Network: cfg.Sandbox.Network && *allowNetwork && !*noNetwork,
+			Commands: cfg.Commands, Image: image, Network: cfg.Sandbox.Network && *allowNetwork && !*noNetwork,
 			Timeout: time.Duration(cfg.Sandbox.TimeoutSeconds) * time.Second, MaxRuntime: time.Duration(cfg.Sandbox.MaxRuntimeSeconds) * time.Second,
 			MaxGeneratedTests: cfg.Reviewer.MaxGeneratedTests, MaxOutputBytes: cfg.Sandbox.MaxOutputBytes,
 			MemoryMB: cfg.Sandbox.MemoryMB, CPUs: cfg.Sandbox.CPUs, Diff: string(diffJSON),
+			IntentCriteria: r.IntentCriteria, Symbols: impact.lookup, Cache: cache, Parallel: *parallel,
+			ReviewerReserve: reviewerReserve(cfg, *useReviewer),
 		})
 		if err != nil {
 			return fail(errOut, 4, "harness: %v", err)
 		}
 		defer h.Close()
+		// Stage order: initial checks, coverage, baseline versions of changed
+		// tests, impacted tests, fuzzing, mutation, then the reviewer. The
+		// cheapest and strongest deterministic evidence comes first.
 		if *checks {
-			for _, kind := range []string{"test", "typecheck", "build"} {
-				if _, ok := cfg.Commands[kind]; !ok {
-					continue
-				}
-				fmt.Fprintf(errOut, "Running %s in isolated Docker sandbox...\n", kind)
-				check := h.Run(ctx, kind)
-				if check.Status == "ERROR" {
-					operationalFailure = true
+			if kinds := initialChecks(cfg.Commands); len(kinds) > 0 {
+				fmt.Fprintf(errOut, "Running %s in isolated Docker sandboxes...\n", strings.Join(kinds, ", "))
+				for _, c := range h.RunChecks(work, kinds) {
+					if c.Status == "ERROR" {
+						operationalFailure = true
+					}
 				}
 			}
-			// Coverage runs last and in addition to the configured test command,
-			// so the shared runtime budget starves the measurement rather than
-			// the checks a repository already relies on.
+			// Coverage runs after the initial checks and in addition to the
+			// configured test command, so the shared runtime budget starves the
+			// measurement rather than the checks a repository already relies on.
+			covered := coverage.Result{}
 			if _, configured := cfg.Commands[coverage.CommandKey]; configured {
 				fmt.Fprintf(errOut, "Running %s in isolated Docker sandbox...\n", coverage.CommandKey)
-				check, profile, sha, reason := h.RunCoverage(ctx)
+				check, profile, sha, reason := h.RunCoverage(work)
 				if check.Status == "ERROR" {
 					operationalFailure = true
 				}
@@ -296,13 +373,26 @@ func analyze(ctx context.Context, mode string, args []string, out, errOut io.Wri
 				if result.Status() != coverage.StatusMeasured {
 					r.Unverified = append(r.Unverified, "Changed-line execution was not measured: "+r.Coverage.Reason)
 				}
+				if reason == "" && check.Status == "PASS" {
+					covered = result
+				}
+			}
+			if *baseTests && runBaseTests(work, repo, change, h, &r, errOut) {
+				operationalFailure = true
+			}
+			if *impactedTests && runImpactedTests(work, h, &r, impact, errOut) {
+				operationalFailure = true
+			}
+			runFuzz(work, h, cfg, change, baseDir, candidateDir, &r, *fuzzFlag, errOut)
+			if cfg.Mutation != nil && runMutation(work, h, cfg, change, covered, &r, errOut) {
+				operationalFailure = true
 			}
 		}
 		r.Checks, r.Evidence, r.Audit = h.Checks(), h.Evidence(), h.Audit()
 		auditBefore := len(r.Audit)
 		if *useReviewer {
 			fmt.Fprintln(errOut, "Investigating with the configured reviewer API...")
-			err := reviewer.Run(ctx, reviewerOptions, &r, h)
+			err := reviewer.Run(work, reviewerOptions, &r, h)
 			if err != nil {
 				r.Unverified = append(r.Unverified, "Reviewer incomplete: "+err.Error())
 			}
@@ -310,14 +400,26 @@ func analyze(ctx context.Context, mode string, args []string, out, errOut io.Wri
 		r.Checks, r.Evidence, r.Artifacts = h.Checks(), h.Evidence(), h.Artifacts()
 		r.Audit = append(r.Audit, h.Audit()[auditBefore:]...)
 		sort.SliceStable(r.Audit, func(i, j int) bool { return r.Audit[i].Time.Before(r.Audit[j].Time) })
+		r.Execution = executionSummary(h, work)
 		for _, c := range r.Checks {
 			if c.Status == "ERROR" {
 				operationalFailure = true
 			}
 		}
-	} else if mode == "review" && len(change.Files) > 0 {
+	} else if mode == "review" && len(change.Files) > 0 && !(*checks || *useReviewer) {
 		r.Unverified = append(r.Unverified, "Automated execution was explicitly disabled; only static change analysis was performed.")
 	}
+	if deadlineReached(ctx, work) {
+		r.Unverified = append(r.Unverified, deadlineNote)
+	}
+	// A requested or configured stage that did not run still records its
+	// section, with the reason (present means requested).
+	recordFuzzSkipped(cfg, sc, *fuzzFlag, &r)
+	recordBaseTestsSkipped(sc, *baseTests, &r)
+	recordImpactedTestsSkipped(sc, *impactedTests, &r)
+	recordMutationSkipped(cfg, sc, &r)
+	r.Artifacts = append(prep.artifacts, r.Artifacts...)
+	r.Audit = append(prep.audit, r.Audit...)
 	for i := range r.Artifacts {
 		if relative, err := filepath.Rel(output, r.Artifacts[i].Path); err == nil && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
 			r.Artifacts[i].Path = filepath.ToSlash(relative)
@@ -327,7 +429,7 @@ func analyze(ctx context.Context, mode string, args []string, out, errOut io.Wri
 	if operationalFailure {
 		r.ExitCode = 4
 	}
-	if err := report.Write(output, &r, formats); err != nil {
+	if err := report.Write(output, &r, formats, opts...); err != nil {
 		return fail(errOut, 4, "write report: %v", err)
 	}
 	fmt.Fprintf(out, "%d files, +%d/-%d lines; %d risk signals; %d reproduced issues.\nFocused review: %d / %d changed lines (a prioritization aid, not a correctness guarantee).\n", len(change.Files), change.Additions, change.Deletions, len(r.Signals), len(r.ReproducedIssues), r.ReviewSurface.FocusedLines, r.ReviewSurface.ChangedLines)
@@ -335,6 +437,9 @@ func analyze(ctx context.Context, mode string, args []string, out, errOut io.Wri
 		fmt.Fprintf(out, "Changed-line execution: %d executed, %d not executed, %d outside any instrumented block, %d not measured, of %d added Go lines.\n", r.Coverage.ExecutedLines, r.Coverage.NotExecutedLines, r.Coverage.NoBlockLines, r.Coverage.NotMeasuredLines, r.Coverage.AddedLines)
 	} else {
 		fmt.Fprintln(out, "Changed-line execution: not measured.")
+	}
+	for _, line := range stdoutLines(&r) {
+		fmt.Fprintln(out, line)
 	}
 	fmt.Fprintf(out, "Reports: %s\n", output)
 	return r.ExitCode
@@ -401,7 +506,8 @@ func render(args []string, out, errOut io.Writer) int {
 	f.SetOutput(errOut)
 	input := f.String("input", ".swiftproof/confidence-report.json", "saved JSON report")
 	dir := f.String("out", ".swiftproof", "output directory")
-	format := f.String("format", "markdown,json", "output formats")
+	format := f.String("format", "markdown,json", "comma-separated output formats: markdown,json")
+	reportURL := f.String("report-url", "", "https link to the full report, cited by the pr-comment format")
 	if err := f.Parse(args); err != nil {
 		return flagCode(err)
 	}
@@ -409,6 +515,10 @@ func render(args []string, out, errOut io.Writer) int {
 		return fail(errOut, 3, "report accepts no positional arguments")
 	}
 	formats, err := parseFormats(*format)
+	if err != nil {
+		return fail(errOut, 3, "%v", err)
+	}
+	opts, err := reportOptions(formats, *reportURL)
 	if err != nil {
 		return fail(errOut, 3, "%v", err)
 	}
@@ -434,7 +544,7 @@ func render(args []string, out, errOut io.Writer) int {
 	if err := validateOutput(*dir); err != nil {
 		return fail(errOut, 3, "%v", err)
 	}
-	if err := report.Write(*dir, &r, formats); err != nil {
+	if err := report.Write(*dir, &r, formats, opts...); err != nil {
 		return fail(errOut, 4, "%v", err)
 	}
 	fmt.Fprintf(out, "Reports: %s\n", *dir)
@@ -446,7 +556,7 @@ func parseFormats(s string) ([]string, error) {
 	seen := map[string]bool{}
 	for _, value := range strings.Split(s, ",") {
 		value = strings.TrimSpace(value)
-		if value != "markdown" && value != "json" {
+		if !report.ValidFormat(value) {
 			return nil, fmt.Errorf("unknown report format %q", value)
 		}
 		if !seen[value] {
