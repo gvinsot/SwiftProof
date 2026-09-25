@@ -571,3 +571,41 @@ func TestUncoveredSignalsReachReviewTargets(t *testing.T) {
 		t.Fatal("uncovered_change summary missing from the rendered review list")
 	}
 }
+
+func jestProofReport() *model.Report {
+	r := proofReport()
+	command := []string{"npx", "--no", "vitest", "run", "src/cart.test.ts", "--reporter=json", "--outputFile=/tmp/swiftproof-test-results.json"}
+	result := func(status string) string {
+		return `{"testResults":[{"name":"/workspace/src/cart.test.ts","assertionResults":[{"ancestorTitles":[],"title":"applies the discount once","status":"` + status + `"}]}]}`
+	}
+	r.Checks[0].Command, r.Checks[0].Output, r.Checks[0].Results = command, "", result("passed")
+	r.Checks[1].Command, r.Checks[1].Output, r.Checks[1].Results = command, "", result("failed")
+	r.Evidence[0].Runner, r.Evidence[0].Path, r.Evidence[0].TestNames = "jest_json", "src/cart.test.ts", []string{"applies the discount once"}
+	return r
+}
+
+func TestFinalizeValidatesJestDifferentialProof(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*model.Report)
+		status string
+	}{
+		{"valid", func(*model.Report) {}, "REPRODUCED"},
+		{"results only in log", func(r *model.Report) { r.Checks[1].Output, r.Checks[1].Results = r.Checks[1].Results, "" }, "UNVERIFIED"},
+		{"other file", func(r *model.Report) { r.Evidence[0].Path = "src/other.test.ts" }, "UNVERIFIED"},
+		{"unrelated title", func(r *model.Report) { r.Evidence[0].TestNames = []string{"something else"} }, "UNVERIFIED"},
+		{"baseline skipped", func(r *model.Report) {
+			r.Checks[0].Results = strings.Replace(r.Checks[0].Results, "passed", "skipped", 1)
+		}, "UNVERIFIED"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := jestProofReport()
+			tt.mutate(r)
+			Finalize(r, true)
+			if r.Hypotheses[0].Status != tt.status {
+				t.Fatalf("got status %s", r.Hypotheses[0].Status)
+			}
+		})
+	}
+}

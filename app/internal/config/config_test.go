@@ -239,3 +239,19 @@ func TestResolveReviewerWithoutSecretsDirectory(t *testing.T) {
 		t.Fatalf("resolved %+v, want the policy model and no credential", got)
 	}
 }
+
+func TestResultsPlaceholderOnlyOnceInGeneratedTest(t *testing.T) {
+	if argv := Default("typescript").Commands["generated_test"]; strings.Count(strings.Join(argv, " "), ResultsPlaceholder) != 1 {
+		t.Fatalf("TypeScript default %q does not write a verifiable report", argv)
+	}
+	for _, commands := range []map[string][]string{
+		{"test": {"npx", "vitest", "--outputFile=" + ResultsPlaceholder}},
+		{"generated_test": {"npx", "vitest", "{file}", "--outputFile=" + ResultsPlaceholder, ResultsPlaceholder}},
+	} {
+		c := Default("typescript")
+		c.Commands = commands
+		if err := c.Validate(); err == nil {
+			t.Errorf("accepted %q", commands)
+		}
+	}
+}

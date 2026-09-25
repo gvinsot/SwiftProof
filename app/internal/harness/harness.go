@@ -22,6 +22,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/gvinsot/SwiftProof/app/internal/config"
 	"github.com/gvinsot/SwiftProof/app/internal/coverage"
 	"github.com/gvinsot/SwiftProof/app/internal/model"
 )
@@ -41,7 +42,7 @@ type Options struct {
 type generatedTest struct {
 	ID, Path, Content, Description string
 	Reproduced                     bool
-	GoTests                        []string
+	GoTests, JSTests               []string
 }
 
 type execution struct {
@@ -181,15 +182,15 @@ func (h *Harness) Run(ctx context.Context, kind string) model.Check {
 }
 
 func (h *Harness) run(ctx context.Context, kind, dir string, command []string) model.Check {
-	c, _, _ := h.runWith(ctx, kind, dir, command, false)
+	c, _, _ := h.runWith(ctx, kind, dir, command, "")
 	return c
 }
 
-// runWith executes one command. When withCoverage is set the container returns
-// the coverage profile on its own bounded payload channel; the returned bytes
-// are raw and unredacted so the profile can be parsed and hashed before any
-// display transformation touches it.
-func (h *Harness) runWith(ctx context.Context, kind, dir string, command []string, withCoverage bool) (model.Check, []byte, bool) {
+// runWith executes one command. When capture names an in-container file the
+// container returns that file on its own bounded payload channel; the returned
+// bytes are raw and unredacted so the payload can be parsed and hashed before
+// any display transformation touches it.
+func (h *Harness) runWith(ctx context.Context, kind, dir string, command []string, capture string) (model.Check, []byte, bool) {
 	c := model.Check{ID: fmt.Sprintf("check-%d", len(h.checks)+1), Kind: kind, Command: append([]string(nil), command...), ExitCode: -1}
 	started := time.Now()
 	var payload *boundedWriter
@@ -216,9 +217,9 @@ func (h *Harness) runWith(ctx context.Context, kind, dir string, command []strin
 		name := "swiftproof-" + randomID()
 		out := &boundedWriter{limit: h.opts.MaxOutputBytes}
 		var result execution
-		if withCoverage {
+		if capture != "" {
 			payload = &boundedWriter{limit: coverageLimit(h.opts.MaxOutputBytes)}
-			result = h.executeCapture(runCtx, name, h.dockerArgsCoverage(name, dir, command), out, payload)
+			result = h.executeCapture(runCtx, name, h.dockerArgsScript(name, dir, captureScript(capture), command), out, payload)
 		} else {
 			result = h.execute(runCtx, name, h.dockerArgs(name, dir, command), out)
 		}
@@ -284,7 +285,7 @@ func (h *Harness) RunCoverage(ctx context.Context) (model.Check, []byte, string,
 	for i, arg := range command {
 		command[i] = strings.ReplaceAll(arg, coverage.Placeholder, coverage.ProfilePath)
 	}
-	c, payload, truncated := h.runWith(ctx, coverage.CommandKey, h.candidate, command, true)
+	c, payload, truncated := h.runWith(ctx, coverage.CommandKey, h.candidate, command, coverage.ProfilePath)
 	h.audit = append(h.audit, model.AuditEvent{Time: started.UTC(), Tool: "run_" + coverage.CommandKey, Status: c.Status, DurationMS: time.Since(started).Milliseconds()})
 	if c.Status != "PASS" && c.Status != "FAIL" {
 		// Report the recorded status rather than paraphrase it: a TIMEOUT did run,
@@ -320,15 +321,19 @@ func (h *Harness) rejectPayload(checkID string, payload []byte) {
 // workspace and replaces itself with the configured command.
 const wrapperScript = `cp -R /source/. /workspace/ && exec "$@"`
 
-// coverageScript differs from wrapperScript in exactly one respect: it returns
-// the profile the command wrote as a length-declared frame on the container's
-// standard output, while the command's own output goes to standard error. It
-// adds no mount, no volume, no writable host path and no surviving container.
-// It is built from the frame constants so the producer and the decoder cannot
-// drift apart.
-var coverageScript = `cp -R /source/. /workspace/ 1>&2 || exit 125; "$@" >&2; s=$?; if [ -s ` + coverage.ProfilePath +
-	` ]; then set -- $(wc -c < ` + coverage.ProfilePath + `); printf '` + coverage.FrameHeader + `%s\n' "$1"; cat ` +
-	coverage.ProfilePath + `; printf '%s\n' '` + strings.TrimSuffix(coverage.FrameFooter, "\n") + `'; fi; exit $s`
+// captureScript differs from wrapperScript in exactly one respect: it returns
+// the file the command wrote at path as a length-declared frame on the
+// container's standard output, while the command's own output goes to standard
+// error. It adds no mount, no volume, no writable host path and no surviving
+// container. It is built from the frame constants so the producer and the
+// decoder cannot drift apart. path is a fixed constant, never policy input.
+func captureScript(path string) string {
+	return `cp -R /source/. /workspace/ 1>&2 || exit 125; "$@" >&2; s=$?; if [ -s ` + path +
+		` ]; then set -- $(wc -c < ` + path + `); printf '` + coverage.FrameHeader + `%s\n' "$1"; cat ` +
+		path + `; printf '%s\n' '` + strings.TrimSuffix(coverage.FrameFooter, "\n") + `'; fi; exit $s`
+}
+
+var coverageScript = captureScript(coverage.ProfilePath)
 
 func (h *Harness) dockerArgs(name, dir string, command []string) []string {
 	return h.dockerArgsScript(name, dir, wrapperScript, command)
@@ -956,9 +961,18 @@ func (h *Harness) createTest(path, content, description string) (any, error) {
 			}
 		}
 	}
+	// Titles are only required when the policy can verify them, so a project
+	// without a verifiable template keeps running free-form experiments.
+	var jsTests []string
+	if isJSTestPath(path) && verifiableJSTemplate(h.opts.Commands["generated_test"]) {
+		var err error
+		if jsTests, err = generatedJSTests(content); err != nil {
+			return nil, err
+		}
+	}
 	h.generated++
 	id := fmt.Sprintf("generated-test-%d", h.generated)
-	t := &generatedTest{ID: id, Path: path, Content: content, Description: Redact(description), GoTests: goTests}
+	t := &generatedTest{ID: id, Path: path, Content: content, Description: Redact(description), GoTests: goTests, JSTests: jsTests}
 	h.tests[id] = t
 	return map[string]any{"test_id": id, "path": path}, nil
 }
@@ -1021,19 +1035,32 @@ func (h *Harness) runGenerated(ctx context.Context, id string) (any, error) {
 			return nil, closeErr
 		}
 	}
-	base := h.run(ctx, "generated_test_base", h.base, command)
-	candidate := h.run(ctx, "generated_test_candidate", h.candidate, command)
-	if goRunner {
-		base = ValidateGoExecution(base, t.GoTests)
-		candidate = ValidateGoExecution(candidate, t.GoTests)
+	runner, names := "", []string(nil)
+	switch {
+	case goRunner:
+		runner, names = RunnerGo, t.GoTests
+	case len(t.JSTests) > 0 && hasFile && verifiableJSTemplate(h.opts.Commands["generated_test"]):
+		runner, names = RunnerJest, t.JSTests
+	}
+	var base, candidate model.Check
+	if runner == RunnerJest {
+		base = h.runWithResults(ctx, "generated_test_base", h.base, command)
+		candidate = h.runWithResults(ctx, "generated_test_candidate", h.candidate, command)
+	} else {
+		base = h.run(ctx, "generated_test_base", h.base, command)
+		candidate = h.run(ctx, "generated_test_candidate", h.candidate, command)
+	}
+	if runner != "" {
+		base, _ = ValidateExecution(runner, base, t.Path, names)
+		candidate, _ = ValidateExecution(runner, candidate, t.Path, names)
 		h.checks[len(h.checks)-2] = base
 		h.checks[len(h.checks)-1] = candidate
 	}
 	status := "UNVERIFIED"
-	if goRunner && base.Status == "PASS" && candidate.Status == "FAIL" {
+	if runner != "" && base.Status == "PASS" && candidate.Status == "FAIL" {
 		status = "REPRODUCED"
 	}
-	if goRunner && base.Status == "PASS" && candidate.Status == "PASS" {
+	if runner != "" && base.Status == "PASS" && candidate.Status == "PASS" {
 		status = "NOT_REPRODUCED"
 	}
 	if status == "REPRODUCED" && !t.Reproduced {
@@ -1043,16 +1070,16 @@ func (h *Harness) runGenerated(ctx context.Context, id string) (any, error) {
 		t.Reproduced = true
 	}
 	e := model.Evidence{ID: fmt.Sprintf("evidence-%d", len(h.evidence)+1), Kind: "differential_test", Description: t.Description, Path: t.Path, CheckID: candidate.ID, BaseCheckID: base.ID, Status: status}
-	if goRunner {
-		e.Runner = "go_test_json"
-		e.TestNames = append([]string(nil), t.GoTests...)
+	if runner != "" {
+		e.Runner = runner
+		e.TestNames = append([]string(nil), names...)
 	}
 	if !hasFile {
 		e.Description += " (generated_test command with {file} or {package} is not configured)"
-	} else if !goRunner {
+	} else if runner == "" {
 		e.Description += " (runner has no supported named-test execution verifier; outcome is inconclusive)"
 	}
-	if goRunner && status == "UNVERIFIED" {
+	if runner != "" && status == "UNVERIFIED" {
 		e.Description += " (the generated named test must execute on both revisions; setup failures, skips, truncated output, and unrelated suite failures are inconclusive)"
 	}
 	h.evidence = append(h.evidence, e)
@@ -1075,7 +1102,7 @@ func (h *Harness) testCommand(path string) []string {
 			}
 			arg = strings.ReplaceAll(arg, "{package}", pkg)
 		}
-		command[i] = arg
+		command[i] = strings.ReplaceAll(arg, config.ResultsPlaceholder, ResultsPath)
 	}
 	if !hasFile {
 		return nil
@@ -1101,8 +1128,8 @@ func ToolDefinitions() []map[string]any {
 		{"run_test", "Run an existing test file using the configured test template; Go execution selects its named tests.", map[string]any{"path": str("Existing test file path")}, []string{"path"}},
 		{"run_typecheck", "Run the configured typecheck command in an isolated container.", map[string]any{}, nil},
 		{"run_build", "Run the configured build command in an isolated container.", map[string]any{}, nil},
-		{"create_test", "Create an adversarial test in an ephemeral snapshot; never overwrites source. Go files must define uniquely named TestX(t *testing.T) functions.", map[string]any{"path": str("New test path, e.g. pkg/swiftproof_regression_test.go"), "content": str("Exact test source"), "description": str("What behavior the test checks")}, []string{"path", "content"}},
-		{"run_generated_test", "Run identical generated tests on base and candidate. Verified Go named-test events support differential conclusions; other runners remain UNVERIFIED.", map[string]any{"test_id": str("ID returned by create_test")}, []string{"test_id"}},
+		{"create_test", "Create an adversarial test in an ephemeral snapshot; never overwrites source. Go files must define uniquely named TestX(t *testing.T) functions. JavaScript/TypeScript files must declare uniquely titled top-level test(\"title\", ...) or it(\"title\", ...) calls at column 0, with static titles and no describe block.", map[string]any{"path": str("New test path, e.g. pkg/swiftproof_regression_test.go"), "content": str("Exact test source"), "description": str("What behavior the test checks")}, []string{"path", "content"}},
+		{"run_generated_test", "Run identical generated tests on base and candidate. Verified Go named-test events and Jest-compatible JSON reports (Jest, Vitest) support differential conclusions; other runners remain UNVERIFIED.", map[string]any{"test_id": str("ID returned by create_test")}, []string{"test_id"}},
 		{"delete_generated_test", "Discard a generated test that has not reproduced an issue.", map[string]any{"test_id": str("Generated test ID")}, []string{"test_id"}},
 	}
 	result := make([]map[string]any, 0, len(tools))

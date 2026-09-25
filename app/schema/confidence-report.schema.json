@@ -125,7 +125,8 @@
         "exit_code": {"type": "integer", "minimum": -1, "description": "-1 means no process exit status was available."},
         "duration_ms": {"$ref": "#/$defs/count"},
         "output": {"type": "string"},
-        "truncated": {"type": "boolean"}
+        "truncated": {"type": "boolean"},
+        "results": {"type": "string", "description": "Normalized Jest-compatible JSON report the runner wrote to {results_out}; kept apart from output so logs cannot forge it."}
       },
       "allOf": [
         {"if": {"properties": {"status": {"const": "PASS"}}}, "then": {"properties": {"exit_code": {"const": 0}}}},
@@ -144,7 +145,7 @@
         "output": {"type": "string"},
         "check_id": {"$ref": "#/$defs/id"},
         "base_check_id": {"$ref": "#/$defs/id"},
-        "runner": {"type": "string", "enum": ["go_test_json"], "description": "Verifier used to confirm that the generated named tests actually ran."},
+        "runner": {"type": "string", "enum": ["go_test_json", "jest_json"], "description": "Verifier used to confirm that the generated named tests actually ran."},
         "test_names": {"type": "array", "items": {"type": "string", "minLength": 1}, "description": "Names extracted from generated test source; empty for observations and unsupported runners."},
         "status": {"type": "string", "enum": ["OBSERVED", "REPRODUCED", "NOT_REPRODUCED", "UNVERIFIED"]}
       },

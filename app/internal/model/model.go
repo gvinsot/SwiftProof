@@ -72,6 +72,9 @@ type Check struct {
 	DurationMS int64    `json:"duration_ms"`
 	Output     string   `json:"output"`
 	Truncated  bool     `json:"truncated"`
+	// Results is the normalized structured report a verifiable test runner
+	// wrote to {results_out}, kept apart from Output so logs cannot forge it.
+	Results string `json:"results,omitempty"`
 }
 type Evidence struct {
 	ID          string   `json:"id"`

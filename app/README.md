@@ -108,6 +108,22 @@ swiftproof review --help
 
 Commands are argv arrays, not shell strings. Configure only checks your project provides. `generated_test` accepts `{file}` and `{package}`; Go's default uses the test's package so it can exercise unexported code. Verified Go experiments require one standalone target placeholder; use `-tags=integration` for valued flags. Multi-package commands, execution wrappers and overlays cannot produce verified Go evidence. Avoid scripts that silently skip generated tests.
 
+### Verified TypeScript/JavaScript experiments
+
+A JavaScript or TypeScript `generated_test` command supports differential evidence when it runs the generated file as one standalone `{file}` argument and writes a Jest-compatible JSON report to `{results_out}` (exactly once, and only in this command). Vitest and Jest both produce this format:
+
+```json
+{
+  "commands": {
+    "generated_test": ["npx", "--no", "vitest", "run", "{file}", "--reporter=json", "--outputFile={results_out}"]
+  }
+}
+```
+
+For Jest: `["npx", "--no", "jest", "{file}", "--json", "--outputFile={results_out}"]`. `swiftproof init --language typescript` writes the Vitest form. The report travels back on the sandbox payload channel, apart from the command's log, so test output cannot impersonate it. It is normalized (redacted, bounded messages), stored in the check's `results` field and retained as a hashed `test_results` artifact.
+
+A run is verified only when the report has exactly one entry for `/workspace/<generated path>` and each generated title appears once in it at top level: every title passed for a passing run, and at least one failed for a failing run. Generated files must declare uniquely titled `test("…", …)` or `it("…", …)` calls at column 0, with static titles (no escapes or `${}`) and no `describe` block. A missing or truncated report, skipped or nested tests, and failures unrelated to the generated titles are inconclusive. `npm`, `yarn`, `pnpm`, `bun`, `sh`, `bash` and `env` cannot start the template, since they run repository-defined scripts; call the runner binary (for example through `npx`). The image must provide the runner and the project's dependencies, for example installed under `/node_modules`, which Node resolves from `/workspace`. Existing policies without `{results_out}` keep working, with `UNVERIFIED` results.
+
 Sandbox networking requires both `sandbox.network: true` and `--allow-network`. `--no-network` forces it off. This controls test containers; a configured reviewer separately makes provider HTTP requests from the CLI. Use `--reviewer=false` to disable those calls.
 
 Trust and preferably digest-pin the preloaded image. Prepare dependencies in it outside review execution and configure commands to use them. Stock Node/Python images do not contain project dependencies; their commands must be adapted accordingly.
@@ -204,7 +220,7 @@ For the coding-to-deployment workflow, see the [agent loop](docs/AGENT_WORKFLOW.
 
 Containers run non-root, without network by default, with read-only source/root mounts, no added capabilities and CPU/RAM/PID/time limits. The Docker socket, working checkout and API keys are never mounted. See [security boundaries](docs/SECURITY.md).
 
-Generated tests cannot overwrite source. Baseline and candidate runs use fresh environments. Go experiments select the generated test names and verify their actual execution from structured test events. Other frameworks can execute experiments but remain `UNVERIFIED` until equivalent execution validation exists. Reproductions retain test source and hashed artifacts. Reviewers still judge whether a test's assertion reflects intended behavior.
+Generated tests cannot overwrite source. Baseline and candidate runs use fresh environments. Go experiments select the generated test names and verify their actual execution from structured test events; TypeScript/JavaScript experiments verify them from the Jest-compatible JSON report written to `{results_out}`. Other frameworks can execute experiments but remain `UNVERIFIED` until equivalent execution validation exists. Reproductions retain test source and hashed artifacts. Reviewers still judge whether a test's assertion reflects intended behavior.
 
 Execution snapshots currently reject symlinks/submodules. Large inputs fail explicitly or emit analysis-limit signals. There is no automatic dependency installation, semantic TypeScript engine, global call graph, coverage proof, coverage threshold gate, formal verification, automatic merge or PR comment publishing. Changed-line execution is measured for Go only when a coverage command is present in the trusted policy; repositories whose `.swiftproof.json` predates this release measure nothing until that policy is updated by hand. An executed line is an observation, not proof that it is tested.
 

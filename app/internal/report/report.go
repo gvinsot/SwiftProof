@@ -56,10 +56,12 @@ func Finalize(r *model.Report, ci bool) {
 			}
 			candidate, cok := checks[e.CheckID]
 			base, bok := checks[e.BaseCheckID]
-			differential := e.Kind == "differential_test" && e.Runner == "go_test_json" && len(e.TestNames) > 0 && cok && bok && !duplicateChecks[e.CheckID] && !duplicateChecks[e.BaseCheckID] && candidate.Kind == "generated_test_candidate" && base.Kind == "generated_test_base" && equalCommand(candidate.Command, base.Command)
+			differential := e.Kind == "differential_test" && len(e.TestNames) > 0 && cok && bok && !duplicateChecks[e.CheckID] && !duplicateChecks[e.BaseCheckID] && candidate.Kind == "generated_test_candidate" && base.Kind == "generated_test_base" && equalCommand(candidate.Command, base.Command)
 			if differential {
-				candidate = harness.ValidateGoExecution(candidate, e.TestNames)
-				base = harness.ValidateGoExecution(base, e.TestNames)
+				var known bool
+				candidate, known = harness.ValidateExecution(e.Runner, candidate, e.Path, e.TestNames)
+				base, _ = harness.ValidateExecution(e.Runner, base, e.Path, e.TestNames)
+				differential = known
 			}
 			if differential && base.Status == "PASS" && base.ExitCode == 0 {
 				proved = proved || e.Status == "REPRODUCED" && candidate.Status == "FAIL" && candidate.ExitCode > 0 && candidate.ExitCode < 125

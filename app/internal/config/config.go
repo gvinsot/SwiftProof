@@ -16,6 +16,11 @@ import (
 
 const Filename = ".swiftproof.json"
 
+// ResultsPlaceholder names, in a generated_test command, the file a
+// JavaScript/TypeScript runner writes its Jest-compatible JSON report to. It
+// is what lets a generated test support a differential conclusion.
+const ResultsPlaceholder = "{results_out}"
+
 type Sandbox struct {
 	Image             string `json:"image"`
 	Network           bool   `json:"network"`
@@ -80,7 +85,9 @@ func Default(language string) Config {
 		c.Commands = map[string][]string{"test": {"go", "test", "./..."}, "typecheck": {"go", "vet", "./..."}, "build": {"go", "build", "./..."}, "generated_test": {"go", "test", "{package}"}, coverage.CommandKey: {"go", "test", "-covermode=count", "-coverprofile=" + coverage.Placeholder, "./..."}}
 	case "typescript", "javascript":
 		c.Sandbox.Image = "node:22-bookworm"
-		c.Commands = map[string][]string{"test": {"npm", "test"}, "build": {"npm", "run", "build"}}
+		// Vitest writes a Jest-compatible JSON report; a Jest project uses
+		// {"npx", "--no", "jest", "{file}", "--json", "--outputFile=" + ResultsPlaceholder}.
+		c.Commands = map[string][]string{"test": {"npm", "test"}, "build": {"npm", "run", "build"}, "generated_test": {"npx", "--no", "vitest", "run", "{file}", "--reporter=json", "--outputFile=" + ResultsPlaceholder}}
 	case "python":
 		c.Sandbox.Image = "python:3.13-bookworm"
 		c.Commands = map[string][]string{"test": {"python", "-m", "unittest", "discover"}, "generated_test": {"python", "-m", "unittest", "{file}"}}
@@ -181,12 +188,16 @@ func (c Config) Validate() error {
 		if len(argv) == 0 || strings.TrimSpace(argv[0]) == "" || len(argv) > 128 {
 			return fmt.Errorf("command %s must be a nonempty argv array (at most 128 arguments)", name)
 		}
-		placeholders := 0
+		placeholders, results := 0, 0
 		for _, arg := range argv {
 			if strings.ContainsRune(arg, 0) || len(arg) > 16384 {
 				return fmt.Errorf("invalid argument in command %s", name)
 			}
 			placeholders += strings.Count(arg, coverage.Placeholder)
+			results += strings.Count(arg, ResultsPlaceholder)
+		}
+		if results > 0 && (name != "generated_test" || results != 1) {
+			return fmt.Errorf("%s may appear only once and only in the generated_test command", ResultsPlaceholder)
 		}
 		// The executed argv is the reviewed argv: SwiftProof expands the token
 		// the operator wrote and never appends a coverage flag of its own.
